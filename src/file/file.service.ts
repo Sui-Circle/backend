@@ -4,6 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { WalrusService } from '../storage/walrus/walrus.service';
 import { SealService } from '../storage/seal/seal.service';
 import { AccessControlService } from '../access-control/access-control.service';
+import { WalletValidationService } from '../validation/wallet-validation.service';
 
 export interface FileUploadRequest {
   filename: string;
@@ -95,7 +96,8 @@ export class FileService {
     private readonly authService: AuthService,
     private readonly walrusService: WalrusService,
     private readonly sealService: SealService,
-    private readonly accessControlService: AccessControlService
+    private readonly accessControlService: AccessControlService,
+    private readonly walletValidationService: WalletValidationService
   ) {}
 
   /**
@@ -115,6 +117,35 @@ export class FileService {
           transactionDigest: '',
           walrusCid: uploadRequest.walrusCid || '',
           message: 'Authentication failed',
+        };
+      }
+
+      // Validate zkLogin authentication
+      const validationResult = this.walletValidationService.validateZkLoginAuthentication(user);
+      if (!validationResult.isValid) {
+        this.logger.error('zkLogin validation failed:', validationResult.errors);
+        return {
+          success: false,
+          fileCid: '',
+          transactionDigest: '',
+          walrusCid: uploadRequest.walrusCid || '',
+          message: `Authentication validation failed: ${validationResult.errors.join(', ')}`,
+        };
+      }
+
+      // Check for admin address usage
+      const adminValidation = this.walletValidationService.validateNoAdminAddressUsage(
+        user.zkLoginAddress,
+        'file_upload'
+      );
+      if (!adminValidation.isValid) {
+        this.logger.error('Admin address usage detected:', adminValidation.errors);
+        return {
+          success: false,
+          fileCid: '',
+          transactionDigest: '',
+          walrusCid: uploadRequest.walrusCid || '',
+          message: `Invalid wallet usage: ${adminValidation.errors.join(', ')}`,
         };
       }
 
@@ -189,19 +220,22 @@ export class FileService {
             uploadRequest.contentType
           );
         } else {
-          this.logger.warn('❌ zkLogin parameters not available, falling back to regular upload');
-          this.logger.warn('Missing zkLogin parameters:', {
+          this.logger.error('❌ zkLogin parameters not available - cannot upload without user authentication');
+          this.logger.error('Missing zkLogin parameters:', {
             missingEphemeralKeyPair: !user.ephemeralKeyPair,
             missingZkLoginProof: !user.zkLoginProof,
             missingJwt: !user.jwt,
             missingUserSalt: !user.userSalt,
           });
 
-          walrusResult = await this.walrusService.uploadFile(
-            dataToUpload,
-            uploadRequest.filename,
-            uploadRequest.contentType
-          );
+          // Do not fallback to admin signer - require proper user authentication
+          return {
+            success: false,
+            fileCid: '',
+            transactionDigest: '',
+            walrusCid: '',
+            message: 'User authentication required: zkLogin parameters missing. Please log in again.',
+          };
         }
 
         if (!walrusResult.success) {
@@ -229,12 +263,51 @@ export class FileService {
         };
       }
 
-      // Upload file metadata to smart contract
-      const transactionDigest = await this.suiService.uploadFile(
-        user.zkLoginAddress,
+      // Upload file metadata to smart contract with user paying fees
+      this.logger.log('User will pay transaction fees for smart contract upload');
+
+      // Check required zkLogin parameters (temporarily allowing without proof for debugging)
+      const hasRequiredParams = user.ephemeralKeyPair && user.jwt && user.userSalt;
+
+      this.logger.log('Smart contract upload parameter check:', {
+        hasEphemeralKeyPair: !!user.ephemeralKeyPair,
+        hasZkLoginProof: !!user.zkLoginProof,
+        hasJwt: !!user.jwt,
+        hasUserSalt: !!user.userSalt,
+        hasRequiredParams,
+      });
+
+      if (!hasRequiredParams) {
+        this.logger.error('Missing zkLogin parameters for smart contract upload:', {
+          missingEphemeralKeyPair: !user.ephemeralKeyPair,
+          missingZkLoginProof: !user.zkLoginProof,
+          missingJwt: !user.jwt,
+          missingUserSalt: !user.userSalt,
+        });
+
+        return {
+          success: false,
+          fileCid: '',
+          transactionDigest: '',
+          walrusCid,
+          message: 'zkLogin parameters missing for transaction signing',
+        };
+      }
+
+      // Create zkLoginParams with proper type checking
+      const zkLoginParams = {
+        ephemeralKeyPair: user.ephemeralKeyPair!,
+        zkLoginProof: user.zkLoginProof,
+        jwt: user.jwt!,
+        userSalt: user.userSalt!,
+      };
+
+      // Execute transaction with user paying fees
+      const transactionDigest = await this.suiService.uploadFileWithZkLogin(
         walrusCid, // Using Walrus CID as file CID
         uploadRequest.filename,
-        uploadRequest.fileSize
+        uploadRequest.fileSize,
+        zkLoginParams
       );
 
       this.logger.log(

@@ -59,6 +59,20 @@ export class ZkLoginService {
   }
 
   /**
+   * Generate a proper 16-byte salt for zkLogin
+   */
+  private generateUserSalt(): string {
+    // Use a simple timestamp-based salt that's guaranteed to be small enough
+    // This ensures we stay within the 16-byte limit
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000000);
+    const salt = `${timestamp}${random}`;
+
+    this.logger.log(`Generated salt: ${salt}`);
+    return salt;
+  }
+
+  /**
    * Generate ephemeral key pair for zkLogin session
    */
   async generateEphemeralKeyPair(): Promise<EphemeralKeyPair> {
@@ -106,12 +120,15 @@ export class ZkLoginService {
       );
 
       // Create session
+      // Generate a proper 16-byte salt for zkLogin
+      const userSalt = this.generateUserSalt();
+
       const session: ZkLoginSession = {
         ephemeralKeyPair,
         nonce,
         provider,
         maxEpoch: ephemeralKeyPair.maxEpoch,
-        userSalt: this.config.zkLogin.salt,
+        userSalt,
       };
 
       // Generate OAuth URL
@@ -335,6 +352,10 @@ export class ZkLoginService {
       this.logger.log('Calling prover service with payload:', {
         maxEpoch: requestPayload.maxEpoch,
         keyClaimName: requestPayload.keyClaimName,
+        salt: requestPayload.salt,
+        extendedEphemeralPublicKeyLength: requestPayload.extendedEphemeralPublicKey.length,
+        jwtRandomnessLength: requestPayload.jwtRandomness.length,
+        proverUrl: this.config.zkLogin.proverUrl,
         // Don't log sensitive data like JWT
       });
 
@@ -383,9 +404,9 @@ export class ZkLoginService {
         iss: decodedJwt.iss
       });
 
-      // Generate zkLogin proof
+      // Generate zkLogin proof (mandatory for transactions)
       this.logger.log('Generating zkLogin proof...');
-      let zkLoginProof: ZkLoginProof | undefined;
+      let zkLoginProof: ZkLoginProof;
 
       try {
         zkLoginProof = await this.generateZkLoginProof(
@@ -397,8 +418,8 @@ export class ZkLoginService {
       } catch (error) {
         this.logger.error('❌ Failed to generate zkLogin proof:', error.message);
         this.logger.error('Full error:', error);
-        // In development, we can continue without a proof for address derivation
-        // but transactions will need to be handled differently
+        this.logger.error('Prover URL:', this.config.zkLogin.proverUrl);
+        throw new Error(`zkLogin proof generation failed: ${error.message}. This is required for on-chain transactions.`);
       }
 
       // Derive zkLogin address using proper algorithm
@@ -436,7 +457,10 @@ export class ZkLoginService {
     } catch (error) {
       this.logger.error('Failed to complete authentication', error);
       this.logger.error('Error details:', error.stack);
-      throw new Error('Failed to complete authentication');
+      this.logger.error('Error message:', error.message);
+      this.logger.error('Error type:', typeof error);
+      this.logger.error('Error name:', error.name);
+      throw error; // Re-throw the original error instead of masking it
     }
   }
 
