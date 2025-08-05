@@ -83,6 +83,13 @@ describe('ZkLoginService', () => {
       expect(result.session).toHaveProperty('userSalt');
     });
 
+    it('should include sessionId as state parameter in authUrl when provided', async () => {
+      const sessionId = 'test-session-id';
+      const result = await service.createZkLoginSession(OAuthProvider.GOOGLE, sessionId);
+
+      expect(result.authUrl).toContain('state=test-session-id');
+    });
+
     it('should create zkLogin session for Facebook provider', async () => {
       const result = await service.createZkLoginSession(OAuthProvider.FACEBOOK);
 

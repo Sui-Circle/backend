@@ -42,13 +42,14 @@ export class AuthService {
     authUrl: string;
   }> {
     try {
-      // Create zkLogin session
-      const { authUrl, session } = await this.zkLoginService.createZkLoginSession(
-        provider as any
-      );
-
-      // Generate session ID
+      // Generate session ID first
       const sessionId = this.generateSessionId();
+      
+      // Create zkLogin session with sessionId as state
+      const { authUrl, session } = await this.zkLoginService.createZkLoginSession(
+        provider as any,
+        sessionId // Pass sessionId as state parameter
+      );
 
       // Store session
       const authSession: AuthSession = {

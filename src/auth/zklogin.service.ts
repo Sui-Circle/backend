@@ -99,7 +99,7 @@ export class ZkLoginService {
   /**
    * Create zkLogin session and generate OAuth URL
    */
-  async createZkLoginSession(provider: OAuthProvider): Promise<{
+  async createZkLoginSession(provider: OAuthProvider, sessionId?: string): Promise<{
     authUrl: string;
     session: ZkLoginSession;
   }> {
@@ -131,8 +131,8 @@ export class ZkLoginService {
         userSalt,
       };
 
-      // Generate OAuth URL
-      const authUrl = this.generateOAuthUrl(provider, nonce);
+      // Generate OAuth URL with sessionId as state parameter
+      const authUrl = this.generateOAuthUrl(provider, nonce, sessionId);
 
       return { authUrl, session };
     } catch (error) {
@@ -144,7 +144,7 @@ export class ZkLoginService {
   /**
    * Generate OAuth authorization URL
    */
-  private generateOAuthUrl(provider: OAuthProvider, nonce: string): string {
+  private generateOAuthUrl(provider: OAuthProvider, nonce: string, state?: string): string {
     const providerConfig = oauthProviderConfigs[provider];
     const oauthConfig = this.config.oauth[provider];
 
@@ -160,6 +160,12 @@ export class ZkLoginService {
       scope: providerConfig.scope,
       nonce,
     });
+
+    // Add state parameter if provided (used for session ID)
+    if (state) {
+      params.append('state', state);
+      this.logger.log(`Added state parameter: ${state}`);
+    }
 
     // Add provider-specific parameters
     if (provider === OAuthProvider.GOOGLE) {

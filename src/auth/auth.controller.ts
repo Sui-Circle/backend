@@ -181,6 +181,7 @@ export class AuthController {
       const { sessionId, code, state } = body;
 
       this.logger.log(`OAuth callback received: sessionId=${sessionId}, code=${code?.substring(0, 10)}..., state=${state}`);
+      this.logger.log(`Full body received:`, JSON.stringify(body));
 
       if (!sessionId || !code) {
         this.logger.error('Missing required parameters in OAuth callback');
@@ -190,6 +191,17 @@ export class AuthController {
         );
       }
 
+      // Check if session exists
+      const session = this.authService.getSession(sessionId);
+      if (!session) {
+        this.logger.error(`Session not found: ${sessionId}`);
+        throw new HttpException(
+          'Invalid or expired session',
+          HttpStatus.BAD_REQUEST
+        );
+      }
+      this.logger.log(`Session found: ${sessionId}, provider: ${session.zkLoginSession.provider}`);
+
       this.logger.log('Attempting to complete authentication...');
       const { token, user } = await this.authService.completeAuthentication(
         sessionId,
@@ -198,6 +210,7 @@ export class AuthController {
       );
 
       this.logger.log('Authentication completed successfully');
+      this.logger.log(`User authenticated: ${user.zkLoginAddress}, provider: ${user.provider}`);
 
       return {
         success: true,
@@ -213,6 +226,7 @@ export class AuthController {
       };
     } catch (error) {
       this.logger.error('Failed to handle OAuth callback', error);
+      this.logger.error('Error details:', error.stack);
       throw new HttpException(
         error.message || 'Failed to complete authentication',
         HttpStatus.INTERNAL_SERVER_ERROR
