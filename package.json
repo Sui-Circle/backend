@@ -30,6 +30,7 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "@types/jsonwebtoken": "^9.0.10",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "jose": "^6.0.12",
     "jsonwebtoken": "^9.0.2",
