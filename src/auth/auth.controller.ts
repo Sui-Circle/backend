@@ -54,6 +54,117 @@ export class AuthController {
   }
 
   /**
+   * Handle Google OAuth callback (GET request from Google)
+   * GET /auth/google/callback
+   */
+  @Get('google/callback')
+  async handleGoogleCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') error?: string
+  ) {
+    return this.handleOAuthCallback('google', code, state, error);
+  }
+
+  /**
+   * Handle Facebook OAuth callback (GET request from Facebook)
+   * GET /auth/facebook/callback
+   */
+  @Get('facebook/callback')
+  async handleFacebookCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') error?: string
+  ) {
+    return this.handleOAuthCallback('facebook', code, state, error);
+  }
+
+  /**
+   * Handle Twitch OAuth callback (GET request from Twitch)
+   * GET /auth/twitch/callback
+   */
+  @Get('twitch/callback')
+  async handleTwitchCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') error?: string
+  ) {
+    return this.handleOAuthCallback('twitch', code, state, error);
+  }
+
+  /**
+   * Generic OAuth callback handler
+   */
+  private async handleOAuthCallback(
+    provider: string,
+    code: string,
+    state: string,
+    error?: string
+  ) {
+    try {
+      this.logger.log(`${provider} OAuth callback received: code=${code?.substring(0, 10)}..., state=${state}, error=${error}`);
+
+      if (error) {
+        this.logger.error(`OAuth error: ${error}`);
+        return this.createOAuthResponseHTML('oauth_error', { error });
+      }
+
+      if (!code) {
+        this.logger.error('Missing authorization code in OAuth callback');
+        return this.createOAuthResponseHTML('oauth_error', { error: 'Missing authorization code' });
+      }
+
+      const sessionId = state;
+      if (!sessionId) {
+        this.logger.error('Missing session ID in state parameter');
+        return this.createOAuthResponseHTML('oauth_error', { error: 'Missing session ID' });
+      }
+
+      this.logger.log('Attempting to complete authentication...');
+      const { token, user } = await this.authService.completeAuthentication(
+        sessionId,
+        code,
+        state
+      );
+
+      this.logger.log('Authentication completed successfully');
+
+      return this.createOAuthResponseHTML('oauth_success', {
+        token,
+        user: {
+          zkLoginAddress: user.zkLoginAddress,
+          provider: user.provider,
+          email: user.email,
+          name: user.name,
+        }
+      });
+    } catch (error) {
+      this.logger.error(`Failed to handle ${provider} OAuth callback`, error);
+      return this.createOAuthResponseHTML('oauth_error', {
+        error: error.message || 'Authentication failed'
+      });
+    }
+  }
+
+  /**
+   * Create HTML response for OAuth popup
+   */
+  private createOAuthResponseHTML(type: string, data: any): string {
+    const messageData = type === 'oauth_success' ? { type, data } : { type, ...data };
+
+    return `
+      <html>
+        <body>
+          <script>
+            window.opener.postMessage(${JSON.stringify(messageData)}, '*');
+            window.close();
+          </script>
+        </body>
+      </html>
+    `;
+  }
+
+  /**
    * Handle OAuth callback
    * POST /auth/callback
    */
@@ -70,6 +181,7 @@ export class AuthController {
       const { sessionId, code, state } = body;
 
       this.logger.log(`OAuth callback received: sessionId=${sessionId}, code=${code?.substring(0, 10)}..., state=${state}`);
+      this.logger.log(`Full body received:`, JSON.stringify(body));
 
       if (!sessionId || !code) {
         this.logger.error('Missing required parameters in OAuth callback');
@@ -79,6 +191,17 @@ export class AuthController {
         );
       }
 
+      // Check if session exists
+      const session = this.authService.getSession(sessionId);
+      if (!session) {
+        this.logger.error(`Session not found: ${sessionId}`);
+        throw new HttpException(
+          'Invalid or expired session',
+          HttpStatus.BAD_REQUEST
+        );
+      }
+      this.logger.log(`Session found: ${sessionId}, provider: ${session.zkLoginSession.provider}`);
+
       this.logger.log('Attempting to complete authentication...');
       const { token, user } = await this.authService.completeAuthentication(
         sessionId,
@@ -87,6 +210,7 @@ export class AuthController {
       );
 
       this.logger.log('Authentication completed successfully');
+      this.logger.log(`User authenticated: ${user.zkLoginAddress}, provider: ${user.provider}`);
 
       return {
         success: true,
@@ -102,6 +226,7 @@ export class AuthController {
       };
     } catch (error) {
       this.logger.error('Failed to handle OAuth callback', error);
+      this.logger.error('Error details:', error.stack);
       throw new HttpException(
         error.message || 'Failed to complete authentication',
         HttpStatus.INTERNAL_SERVER_ERROR
