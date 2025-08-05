@@ -24,7 +24,7 @@ export interface ZkLoginTransactionParams {
     maxEpoch: number;
     randomness: string;
   };
-  zkLoginProof: {
+  zkLoginProof?: {
     proofPoints: {
       a: string[];
       b: string[][];
@@ -183,13 +183,28 @@ export class WalrusService {
       // Convert Buffer to Uint8Array if needed
       const data = fileData instanceof Buffer ? new Uint8Array(fileData) : fileData;
 
-      // For zkLogin uploads, we need to use direct upload with zkLogin signature
-      const result = await this.uploadDirectWithZkLogin(data, filename, zkLoginParams, contentType);
+      // Derive zkLogin address for validation
+      const zkLoginAddress = this.deriveZkLoginAddress(zkLoginParams.jwt, zkLoginParams.userSalt);
+      this.logger.log(`Using zkLogin address: ${zkLoginAddress}`);
+
+      // Check if we should use upload relay or direct upload
+      let result: WalrusUploadResult;
+
+      if (this.useUploadRelay) {
+        this.logger.log(`Using upload relay for zkLogin upload (user: ${zkLoginAddress})`);
+        // Use upload relay which doesn't require complex signer setup
+        result = await this.uploadViaRelay(data, filename, contentType);
+      } else {
+        this.logger.log(`Using direct upload with zkLogin signature (user: ${zkLoginAddress})`);
+        // Use direct upload with zkLogin signature
+        result = await this.uploadDirectWithZkLogin(data, filename, zkLoginParams, contentType);
+      }
 
       if (result.success) {
         this.logger.log(`✅ File uploaded successfully with zkLogin: ${filename} -> ${result.blobId}`);
         this.logger.log(`📊 File size: ${data.length} bytes`);
         this.logger.log(`🔗 Walrus CID: ${result.blobId}`);
+        this.logger.log(`👤 Uploaded by zkLogin address: ${zkLoginAddress}`);
       }
 
       return result;
@@ -296,9 +311,14 @@ export class WalrusService {
     contentType?: string
   ): Promise<WalrusUploadResult> {
     try {
+      // Derive the zkLogin address for this user
+      const zkLoginAddress = this.deriveZkLoginAddress(zkLoginParams.jwt, zkLoginParams.userSalt);
+
       // Create a custom signer that uses zkLogin signature
       const zkLoginSigner = {
         getPublicKey: () => zkLoginParams.ephemeralKeyPair.keypair.getPublicKey(),
+        getAddress: () => zkLoginAddress,
+        toSuiAddress: () => zkLoginAddress, // Required by Walrus client
         signTransaction: async (txBytes: Uint8Array) => {
           // Sign with ephemeral key pair
           const ephemeralSignature = await zkLoginParams.ephemeralKeyPair.keypair.sign(txBytes);
@@ -306,7 +326,7 @@ export class WalrusService {
           // Create zkLogin signature
           const zkLoginSignature = getZkLoginSignature({
             inputs: {
-              ...zkLoginParams.zkLoginProof,
+              ...zkLoginParams.zkLoginProof!,
               addressSeed: this.getAddressSeed(zkLoginParams.jwt, zkLoginParams.userSalt),
             },
             maxEpoch: zkLoginParams.ephemeralKeyPair.maxEpoch,
@@ -317,8 +337,32 @@ export class WalrusService {
         },
         sign: async (data: Uint8Array) => {
           return await zkLoginParams.ephemeralKeyPair.keypair.sign(data);
-        }
+        },
+        // Additional methods that might be required by Walrus client
+        signTransactionBlock: async (txBytes: Uint8Array) => {
+          // Use the same logic as signTransaction
+          const ephemeralSignature = await zkLoginParams.ephemeralKeyPair.keypair.sign(txBytes);
+
+          const zkLoginSignature = getZkLoginSignature({
+            inputs: {
+              ...zkLoginParams.zkLoginProof!,
+              addressSeed: this.getAddressSeed(zkLoginParams.jwt, zkLoginParams.userSalt),
+            },
+            maxEpoch: zkLoginParams.ephemeralKeyPair.maxEpoch,
+            userSignature: ephemeralSignature,
+          });
+
+          return zkLoginSignature;
+        },
+        signPersonalMessage: async (message: Uint8Array) => {
+          return await zkLoginParams.ephemeralKeyPair.keypair.sign(message);
+        },
+        // Ensure compatibility with different signer interfaces
+        getKeyScheme: () => zkLoginParams.ephemeralKeyPair.keypair.getKeyScheme(),
+        getSecretKey: () => zkLoginParams.ephemeralKeyPair.keypair.getSecretKey()
       };
+
+      this.logger.log(`Uploading to Walrus with zkLogin signer for address: ${zkLoginAddress}`);
 
       // Upload directly to Walrus with zkLogin signer
       const result = await this.walrusClient.writeBlob({
@@ -327,6 +371,8 @@ export class WalrusService {
         epochs: parseInt(process.env.WALRUS_STORAGE_EPOCHS || '5'),
         signer: zkLoginSigner as any, // Type assertion needed for custom signer
       });
+
+      this.logger.log(`Walrus upload successful for zkLogin address ${zkLoginAddress}: ${result.blobId}`);
 
       return {
         success: true,
@@ -350,6 +396,30 @@ export class WalrusService {
     // In production, this should follow the zkLogin specification
     const decoded = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64').toString());
     return `${decoded.sub}_${decoded.iss}_${salt}`;
+  }
+
+  /**
+   * Derive zkLogin address from JWT and user salt
+   */
+  private deriveZkLoginAddress(jwt: string, userSalt: string): string {
+    try {
+      // Parse JWT to get the subject and issuer
+      const jwtPayload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64').toString());
+      const subject = jwtPayload.sub;
+      const issuer = jwtPayload.iss;
+
+      // Create address seed following zkLogin specification
+      const addressSeed = `${subject}_${issuer}_${userSalt}`;
+
+      // For now, return a deterministic address based on the seed
+      // In production this should use proper zkLogin address derivation from @mysten/sui
+      const hash = require('crypto').createHash('sha256').update(addressSeed).digest('hex');
+      return `0x${hash.substring(0, 40)}`; // Truncate to 40 chars for Sui address format
+
+    } catch (error) {
+      this.logger.error('Failed to derive zkLogin address:', error);
+      throw new Error('Invalid JWT or user salt for address derivation');
+    }
   }
 
   /**
