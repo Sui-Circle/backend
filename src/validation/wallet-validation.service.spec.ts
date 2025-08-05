@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { WalletValidationService } from './wallet-validation.service';
 import { AuthenticatedUser } from '../auth/zklogin.service';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { OAuthProvider } from '../config/zklogin.config';
 
 describe('WalletValidationService', () => {
   let service: WalletValidationService;
@@ -21,9 +22,11 @@ describe('WalletValidationService', () => {
   describe('validateZkLoginAuthentication', () => {
     it('should pass validation for complete zkLogin user', () => {
       const mockUser: AuthenticatedUser = {
-        id: 'test-user',
+        sub: 'test-user',
+        aud: 'test-audience',
+        iss: 'https://github.com',
         email: 'test@example.com',
-        provider: 'github',
+        provider: OAuthProvider.GITHUB,
         zkLoginAddress: '0x1234567890123456789012345678901234567890',
         ephemeralKeyPair: {
           keypair: new Ed25519Keypair(),
@@ -55,9 +58,11 @@ describe('WalletValidationService', () => {
 
     it('should fail validation for missing zkLogin parameters', () => {
       const mockUser: AuthenticatedUser = {
-        id: 'test-user',
+        sub: 'test-user',
+        aud: 'test-audience',
+        iss: 'https://github.com',
         email: 'test@example.com',
-        provider: 'github',
+        provider: OAuthProvider.GITHUB,
         zkLoginAddress: '0x1234567890123456789012345678901234567890',
         // Missing required zkLogin parameters
       };
@@ -74,9 +79,11 @@ describe('WalletValidationService', () => {
 
     it('should fail validation for invalid JWT format', () => {
       const mockUser: AuthenticatedUser = {
-        id: 'test-user',
+        sub: 'test-user',
+        aud: 'test-audience',
+        iss: 'https://github.com',
         email: 'test@example.com',
-        provider: 'github',
+        provider: OAuthProvider.GITHUB,
         zkLoginAddress: '0x1234567890123456789012345678901234567890',
         ephemeralKeyPair: {
           keypair: new Ed25519Keypair(),
