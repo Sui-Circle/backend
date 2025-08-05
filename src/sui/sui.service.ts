@@ -35,7 +35,7 @@ export interface SmartContractConfig {
 }
 
 export interface ZkLoginTransactionParams {
-  zkLoginProof: ZkLoginProof;
+  zkLoginProof?: ZkLoginProof;
   ephemeralKeyPair: EphemeralKeyPair;
   userSalt: string;
   jwt: string;
@@ -54,6 +54,8 @@ export class SuiService {
     this.suiClient = new SuiClient({ url: this.config.sui.rpcUrl });
   }
 
+
+
   /**
    * Upload file metadata to SuiCircle smart contract
    */
@@ -64,25 +66,6 @@ export class SuiService {
     fileSize: number
   ): Promise<string> {
     try {
-      if (!this.config.sui.packageId) {
-        throw new Error('SuiCircle package ID not configured');
-      }
-
-      // Create transaction for uploading file
-      const tx = new Transaction();
-
-      // Call upload_file function on smart contract
-      tx.moveCall({
-        target: `${this.config.sui.packageId}::suicircle::upload_file`,
-        arguments: [
-          tx.object(this.config.sui.registryId || '0x6'), // Registry object ID
-          tx.pure.string(cid),
-          tx.pure.string(filename),
-          tx.pure.u64(fileSize),
-          tx.object('0x6'), // Clock object
-        ],
-      });
-
       // For now, return a placeholder transaction digest
       // In a real implementation, you would sign and execute the transaction
       // using the zkLogin proof and ephemeral key pair
@@ -109,14 +92,23 @@ export class SuiService {
         throw new Error('SuiCircle package ID not configured');
       }
 
-      // Create transaction for uploading file
+      const zkLoginAddress = this.deriveZkLoginAddress(zkLoginParams.jwt, zkLoginParams.userSalt);
+
+      this.logger.log(`Processing file upload for user: ${zkLoginAddress}`);
+      this.logger.log(`File: ${filename}, Size: ${fileSize} bytes, CID: ${cid}`);
+      this.logger.log(`Uploading file metadata to smart contract for user: ${zkLoginAddress}`);
+
+      // Create transaction for uploading file metadata
       const tx = new Transaction();
 
-      // Call upload_file function on smart contract
+      this.logger.log(`📝 Creating on-chain transaction for file: ${filename} (${fileSize} bytes)`);
+      this.logger.log(`🔗 File CID: ${cid}`);
+
+      // Call upload_file function on the newly deployed smart contract
       tx.moveCall({
         target: `${this.config.sui.packageId}::suicircle::upload_file`,
         arguments: [
-          tx.object('0x6'), // Registry object ID (placeholder)
+          tx.object(this.config.sui.registryId!), // ProtocolStats object
           tx.pure.string(cid),
           tx.pure.string(filename),
           tx.pure.u64(fileSize),
@@ -124,10 +116,14 @@ export class SuiService {
         ],
       });
 
+      this.logger.log(`⛽ User ${zkLoginAddress} will pay gas for this transaction`);
+
       // Execute transaction with zkLogin signature
       const result = await this.executeZkLoginTransaction(tx, zkLoginParams);
 
-      this.logger.log(`Uploaded file ${filename} with CID ${cid}, transaction: ${result.digest}`);
+      this.logger.log(`✅ File uploaded successfully with user-paid gas: ${filename} -> ${cid}`);
+      this.logger.log(`💰 Transaction digest: ${result.digest}`);
+      this.logger.log(`👤 Gas paid by user: ${zkLoginAddress}`);
 
       return result.digest;
     } catch (error) {
@@ -301,12 +297,14 @@ export class SuiService {
     zkLoginParams: ZkLoginTransactionParams
   ): Promise<{ digest: string }> {
     try {
-      // Set sender to the zkLogin address
+      // Set sender to the zkLogin address (user will pay gas fees)
       const zkLoginAddress = this.deriveZkLoginAddress(
         zkLoginParams.jwt,
         zkLoginParams.userSalt
       );
       tx.setSender(zkLoginAddress);
+
+      this.logger.log(`💰 User ${zkLoginAddress} will pay gas fees for this transaction`);
 
       // Build the transaction
       const txBytes = await tx.build({ client: this.suiClient });
@@ -317,26 +315,33 @@ export class SuiService {
       // Create zkLogin signature
       const zkLoginSignature = getZkLoginSignature({
         inputs: {
-          ...zkLoginParams.zkLoginProof,
+          ...zkLoginParams.zkLoginProof!,
           addressSeed: this.getAddressSeed(zkLoginParams.jwt, zkLoginParams.userSalt),
         },
         maxEpoch: zkLoginParams.ephemeralKeyPair.maxEpoch,
         userSignature: ephemeralSignature,
       });
 
-      // Execute the transaction
+      this.logger.log(`🔐 Executing transaction signed by user: ${zkLoginAddress}`);
+
+      // Execute the transaction (user pays gas)
       const result = await this.suiClient.executeTransactionBlock({
         transactionBlock: txBytes,
         signature: zkLoginSignature,
         options: {
           showEffects: true,
           showEvents: true,
+          showObjectChanges: true,
         },
       });
 
       if (result.effects?.status?.status !== 'success') {
+        this.logger.error(`Transaction failed for user ${zkLoginAddress}:`, result.effects?.status);
         throw new Error(`Transaction failed: ${result.effects?.status?.error}`);
       }
+
+      this.logger.log(`✅ Transaction successful! User ${zkLoginAddress} paid gas fees`);
+      this.logger.log(`📋 Transaction digest: ${result.digest}`);
 
       return { digest: result.digest };
     } catch (error) {

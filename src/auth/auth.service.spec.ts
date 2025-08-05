@@ -64,7 +64,8 @@ describe('AuthService', () => {
       expect(result).toHaveProperty('sessionId');
       expect(result).toHaveProperty('authUrl');
       expect(result.authUrl).toContain('accounts.google.com');
-      expect(mockZkLoginService.createZkLoginSession).toHaveBeenCalledWith('google');
+      // Verify that createZkLoginSession is called with the sessionId as the second parameter
+      expect(mockZkLoginService.createZkLoginSession).toHaveBeenCalledWith('google', expect.any(String));
     });
 
     it('should handle errors during session creation', async () => {
