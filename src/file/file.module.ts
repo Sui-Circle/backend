@@ -5,11 +5,12 @@ import { SuiModule } from '../sui/sui.module';
 import { AuthModule } from '../auth/auth.module';
 import { StorageModule } from '../storage/storage.module';
 import { AccessControlModule } from '../access-control/access-control.module';
+import { WalletValidationService } from '../validation/wallet-validation.service';
 
 @Module({
   imports: [SuiModule, AuthModule, StorageModule, AccessControlModule],
   controllers: [FileController],
-  providers: [FileService],
+  providers: [FileService, WalletValidationService],
   exports: [FileService],
 })
 export class FileModule {}

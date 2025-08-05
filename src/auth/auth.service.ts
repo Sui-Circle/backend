@@ -43,6 +43,10 @@ export class AuthService {
   }> {
     try {
       // Generate session ID first
+      // const sessionId = this.generateSessionId();
+      
+      // Create zkLogin session with sessionId as state
+      // Generate session ID first
       const sessionId = this.generateSessionId();
       
       // Create zkLogin session with sessionId as state
