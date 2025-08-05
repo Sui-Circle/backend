@@ -93,6 +93,19 @@ export class AuthController {
   }
 
   /**
+   * Handle GitHub OAuth callback (GET request from GitHub)
+   * GET /auth/github/callback
+   */
+  @Get('github/callback')
+  async handleGithubCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') error?: string
+  ) {
+    return this.handleOAuthCallback('github', code, state, error);
+  }
+
+  /**
    * Generic OAuth callback handler
    */
   private async handleOAuthCallback(

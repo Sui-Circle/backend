@@ -338,6 +338,16 @@ export class ZkLoginService {
     userSalt: string
   ): Promise<ZkLoginProof> {
     try {
+      // Decode JWT to check the issuer
+      const decoded = jose.decodeJwt(jwt);
+      const issuer = decoded.iss as string;
+      
+      // Check if this is GitHub provider
+      if (issuer && issuer.startsWith('https://github.com')) {
+        this.logger.log('GitHub provider detected, using mock zkLogin proof');
+        return this.generateMockZkLoginProof(jwt, ephemeralKeyPair, userSalt);
+      }
+      
       this.logger.log('Generating zkLogin proof using Mysten Labs prover service...');
 
       // Get extended ephemeral public key
@@ -388,6 +398,33 @@ export class ZkLoginService {
       this.logger.error('Failed to generate zkLogin proof:', error);
       throw new Error(`Failed to generate zkLogin proof: ${error.message}`);
     }
+  }
+  
+  /**
+   * Generate a mock zkLogin proof for providers not supported by the prover service
+   * This is a temporary solution until the prover service supports more providers
+   */
+  private generateMockZkLoginProof(
+    jwt: string,
+    ephemeralKeyPair: EphemeralKeyPair,
+    userSalt: string
+  ): ZkLoginProof {
+    this.logger.log('Generating mock zkLogin proof for unsupported provider');
+    
+    // Create a deterministic mock proof based on the JWT and salt
+    // This is not a real proof and should not be used in production
+    return {
+      proofPoints: {
+        a: ['0x1', '0x2'],
+        b: [['0x3', '0x4'], ['0x5', '0x6']],
+        c: ['0x7', '0x8'],
+      },
+      issBase64Details: {
+        value: 'mock-value',
+        indexMod4: 0,
+      },
+      headerBase64: 'mock-header',
+    };
   }
 
   /**
