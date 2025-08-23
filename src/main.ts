@@ -53,6 +53,8 @@ async function bootstrap() {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
+  // Expose headers so the frontend can read them (needed for filename and encryption status)
+  exposedHeaders: ['Content-Disposition', 'X-File-Encrypted', 'X-Seal-Encryption-Id', 'Content-Length', 'Content-Type'],
 });
 
 

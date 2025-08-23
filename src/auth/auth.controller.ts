@@ -213,7 +213,7 @@ export class AuthController {
           HttpStatus.BAD_REQUEST
         );
       }
-      this.logger.log(`Session found: ${sessionId}, provider: ${session.zkLoginSession.provider}`);
+      this.logger.log(`Session found: ${sessionId}, provider: ${session?.zkLoginSession?.provider}`);
 
       this.logger.log('Attempting to complete authentication...');
       const { token, user } = await this.authService.completeAuthentication(
@@ -268,17 +268,31 @@ export class AuthController {
         throw new HttpException('Invalid or expired token', HttpStatus.UNAUTHORIZED);
       }
 
-      return {
-        success: true,
-        data: {
-          user: {
-            zkLoginAddress: user.zkLoginAddress,
-            provider: user.provider,
-            email: user.email,
-            name: user.name,
+      // Handle both wallet and zkLogin users
+      if ('walletAddress' in user) {
+        return {
+          success: true,
+          data: {
+            user: {
+              walletAddress: user.walletAddress,
+              provider: user.provider,
+              name: user.name,
+            },
           },
-        },
-      };
+        };
+      } else {
+        return {
+          success: true,
+          data: {
+            user: {
+              zkLoginAddress: user.zkLoginAddress,
+              provider: user.provider,
+              email: user.email,
+              name: user.name,
+            },
+          },
+        };
+      }
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
@@ -313,18 +327,30 @@ export class AuthController {
         throw new HttpException('Invalid or expired token', HttpStatus.UNAUTHORIZED);
       }
 
-      return {
-        success: true,
-        data: {
-          zkLoginAddress: user.zkLoginAddress,
-          provider: user.provider,
-          email: user.email,
-          name: user.name,
-          sub: user.sub,
-          aud: user.aud,
-          iss: user.iss,
-        },
-      };
+      // Handle both wallet and zkLogin users
+      if ('walletAddress' in user) {
+        return {
+          success: true,
+          data: {
+            walletAddress: user.walletAddress,
+            provider: user.provider,
+            name: user.name,
+          },
+        };
+      } else {
+        return {
+          success: true,
+          data: {
+            zkLoginAddress: user.zkLoginAddress,
+            provider: user.provider,
+            email: user.email,
+            name: user.name,
+            sub: user.sub,
+            aud: user.aud,
+            iss: user.iss,
+          },
+        };
+      }
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
@@ -414,6 +440,48 @@ export class AuthController {
       this.logger.error('Failed to check file access', error);
       throw new HttpException(
         'Failed to check file access',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+  
+  /**
+   * Authenticate with wallet
+   * POST /auth/wallet
+   */
+  @Post('wallet')
+  async authenticateWithWallet(
+    @Body() body: { walletAddress: string }
+  ) {
+    try {
+      const { walletAddress } = body;
+      
+      if (!walletAddress) {
+        throw new HttpException(
+          'Missing wallet address',
+          HttpStatus.BAD_REQUEST
+        );
+      }
+      
+      this.logger.log(`Authenticating wallet: ${walletAddress}`);
+      
+      const { token, user } = await this.authService.authenticateWithWallet(walletAddress);
+      
+      return {
+        success: true,
+        data: {
+          token,
+          user: {
+            walletAddress: user.walletAddress,
+            provider: user.provider,
+            name: user.name,
+          },
+        },
+      };
+    } catch (error) {
+      this.logger.error('Failed to authenticate with wallet', error);
+      throw new HttpException(
+        error.message || 'Failed to authenticate with wallet',
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }

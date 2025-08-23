@@ -12,6 +12,11 @@ export interface WalrusUploadResult {
   size?: number;
 }
 
+export interface WalrusUploadOptions {
+  epochs?: number; // Number of epochs to store; defaults to max supported
+  deletable?: boolean; // Whether blob can be deleted before expiry; defaults to false
+}
+
 export interface WalrusDownloadResult {
   success: boolean;
   data?: Uint8Array;
@@ -128,7 +133,8 @@ export class WalrusService {
   async uploadFile(
     fileData: Buffer | Uint8Array,
     filename: string,
-    contentType?: string
+    contentType?: string,
+    options?: WalrusUploadOptions
   ): Promise<WalrusUploadResult> {
     try {
       this.logger.log(`Starting upload for file: ${filename}, size: ${fileData.length} bytes`);
@@ -145,10 +151,10 @@ export class WalrusService {
 
       if (this.useUploadRelay) {
         // Option 1: Upload via relay
-        result = await this.uploadViaRelay(data, filename, contentType);
+        result = await this.uploadViaRelay(data, filename, contentType, options);
       } else {
         // Option 2: Direct upload with signer
-        result = await this.uploadDirect(data, filename, contentType);
+        result = await this.uploadDirect(data, filename, contentType, options);
       }
 
       if (result.success) {
@@ -175,7 +181,8 @@ export class WalrusService {
     fileData: Buffer | Uint8Array,
     filename: string,
     zkLoginParams: ZkLoginTransactionParams,
-    contentType?: string
+    contentType?: string,
+    options?: WalrusUploadOptions
   ): Promise<WalrusUploadResult> {
     try {
       this.logger.log(`Starting zkLogin upload for file: ${filename}, size: ${fileData.length} bytes`);
@@ -183,28 +190,28 @@ export class WalrusService {
       // Convert Buffer to Uint8Array if needed
       const data = fileData instanceof Buffer ? new Uint8Array(fileData) : fileData;
 
-      // Derive zkLogin address for validation
-      const zkLoginAddress = this.deriveZkLoginAddress(zkLoginParams.jwt, zkLoginParams.userSalt);
-      this.logger.log(`Using zkLogin address: ${zkLoginAddress}`);
+      // Derive user address for validation
+      const userAddress = this.deriveZkLoginAddress(zkLoginParams.jwt, zkLoginParams.userSalt);
+      this.logger.log(`Using zkLogin address: ${userAddress}`);
 
       // Check if we should use upload relay or direct upload
       let result: WalrusUploadResult;
 
       if (this.useUploadRelay) {
-        this.logger.log(`Using upload relay for zkLogin upload (user: ${zkLoginAddress})`);
+        this.logger.log(`Using upload relay for zkLogin upload (user: ${userAddress})`);
         // Use upload relay which doesn't require complex signer setup
-        result = await this.uploadViaRelay(data, filename, contentType);
+        result = await this.uploadViaRelay(data, filename, contentType, options);
       } else {
-        this.logger.log(`Using direct upload with zkLogin signature (user: ${zkLoginAddress})`);
+        this.logger.log(`Using direct upload with zkLogin signature (user: ${userAddress})`);
         // Use direct upload with zkLogin signature
-        result = await this.uploadDirectWithZkLogin(data, filename, zkLoginParams, contentType);
+        result = await this.uploadDirectWithZkLogin(data, filename, zkLoginParams, contentType, options);
       }
 
       if (result.success) {
         this.logger.log(`✅ File uploaded successfully with zkLogin: ${filename} -> ${result.blobId}`);
         this.logger.log(`📊 File size: ${data.length} bytes`);
         this.logger.log(`🔗 Walrus CID: ${result.blobId}`);
-        this.logger.log(`👤 Uploaded by zkLogin address: ${zkLoginAddress}`);
+        this.logger.log(`👤 Uploaded by zkLogin address: ${userAddress}`);
       }
 
       return result;
@@ -223,7 +230,8 @@ export class WalrusService {
   private async uploadViaRelay(
     data: Uint8Array,
     filename: string,
-    contentType?: string
+    contentType?: string,
+    options?: WalrusUploadOptions
   ): Promise<WalrusUploadResult> {
     try {
       // Create WalrusFile with metadata
@@ -243,8 +251,9 @@ export class WalrusService {
 
       const results = await this.walrusClient.writeFiles({
         files: [walrusFile],
-        epochs: parseInt(process.env.WALRUS_STORAGE_EPOCHS || '5'),
-        deletable: true,
+        // Prefer explicit options, then env, then sensible default (max epochs if provided by env)
+        epochs: options?.epochs ?? parseInt(process.env.WALRUS_STORAGE_EPOCHS || '53'),
+        deletable: options?.deletable ?? false,
         signer: this.signer,
       });
 
@@ -272,7 +281,8 @@ export class WalrusService {
   private async uploadDirect(
     data: Uint8Array,
     filename: string,
-    contentType?: string
+    contentType?: string,
+    options?: WalrusUploadOptions
   ): Promise<WalrusUploadResult> {
     try {
       if (!this.signer) {
@@ -282,8 +292,8 @@ export class WalrusService {
       // Upload directly to Walrus
       const result = await this.walrusClient.writeBlob({
         blob: data,
-        deletable: true,
-        epochs: parseInt(process.env.WALRUS_STORAGE_EPOCHS || '5'),
+        deletable: options?.deletable ?? false,
+        epochs: options?.epochs ?? parseInt(process.env.WALRUS_STORAGE_EPOCHS || '53'),
         signer: this.signer,
       });
 
@@ -308,17 +318,18 @@ export class WalrusService {
     data: Uint8Array,
     filename: string,
     zkLoginParams: ZkLoginTransactionParams,
-    contentType?: string
+    contentType?: string,
+    options?: WalrusUploadOptions
   ): Promise<WalrusUploadResult> {
     try {
-      // Derive the zkLogin address for this user
-      const zkLoginAddress = this.deriveZkLoginAddress(zkLoginParams.jwt, zkLoginParams.userSalt);
+      // Derive the user address for this user
+      const userAddress = this.deriveZkLoginAddress(zkLoginParams.jwt, zkLoginParams.userSalt);
 
       // Create a custom signer that uses zkLogin signature
       const zkLoginSigner = {
         getPublicKey: () => zkLoginParams.ephemeralKeyPair.keypair.getPublicKey(),
-        getAddress: () => zkLoginAddress,
-        toSuiAddress: () => zkLoginAddress, // Required by Walrus client
+        getAddress: () => userAddress,
+        toSuiAddress: () => userAddress, // Required by Walrus client
         signTransaction: async (txBytes: Uint8Array) => {
           // Sign with ephemeral key pair
           const ephemeralSignature = await zkLoginParams.ephemeralKeyPair.keypair.sign(txBytes);
@@ -362,17 +373,17 @@ export class WalrusService {
         getSecretKey: () => zkLoginParams.ephemeralKeyPair.keypair.getSecretKey()
       };
 
-      this.logger.log(`Uploading to Walrus with zkLogin signer for address: ${zkLoginAddress}`);
+      this.logger.log(`Uploading to Walrus with zkLogin signer for address: ${userAddress}`);
 
       // Upload directly to Walrus with zkLogin signer
       const result = await this.walrusClient.writeBlob({
         blob: data,
-        deletable: true,
-        epochs: parseInt(process.env.WALRUS_STORAGE_EPOCHS || '5'),
+        deletable: options?.deletable ?? false,
+        epochs: options?.epochs ?? parseInt(process.env.WALRUS_STORAGE_EPOCHS || '53'),
         signer: zkLoginSigner as any, // Type assertion needed for custom signer
       });
 
-      this.logger.log(`Walrus upload successful for zkLogin address ${zkLoginAddress}: ${result.blobId}`);
+      this.logger.log(`Walrus upload successful for zkLogin address ${userAddress}: ${result.blobId}`);
 
       return {
         success: true,
@@ -399,7 +410,8 @@ export class WalrusService {
   }
 
   /**
-   * Derive zkLogin address from JWT and user salt
+   * Derive user address from JWT and user salt
+   * This method is used for zkLogin authentication
    */
   private deriveZkLoginAddress(jwt: string, userSalt: string): string {
     try {

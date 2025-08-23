@@ -34,6 +34,8 @@ export class FileController {
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
     @Headers('authorization') authorization: string,
+    @Headers('x-walrus-epochs') epochsHeader: string,
+    @Headers('x-walrus-deletable') deletableHeader: string,
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser() user: any
   ) {
@@ -47,6 +49,10 @@ export class FileController {
         fileSize: file.size,
         contentType: file.mimetype,
         fileData: file.buffer,
+        walrusOptions: {
+          epochs: epochsHeader ? parseInt(epochsHeader) : undefined,
+          deletable: typeof deletableHeader === 'string' ? deletableHeader.toLowerCase() === 'true' : undefined,
+        },
       };
 
       const token = authorization.substring(7); // Remove 'Bearer ' prefix
@@ -86,6 +92,11 @@ export class FileController {
     @CurrentUser() user: any
   ) {
     try {
+      // Ensure default Walrus options if client didn't provide them
+      uploadRequest.walrusOptions = uploadRequest.walrusOptions || {};
+      if (typeof uploadRequest.walrusOptions.deletable === 'undefined') {
+        uploadRequest.walrusOptions.deletable = false;
+      }
       const token = authorization.substring(7); // Remove 'Bearer ' prefix
       const result = await this.fileService.uploadFile(token, uploadRequest);
 
@@ -182,6 +193,15 @@ export class FileController {
 
       if (result.filename) {
         res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+      }
+
+      // Add encryption status header if encrypted
+      if (result.isEncrypted) {
+        res.setHeader('X-File-Encrypted', 'true');
+        if ((result as any).encryptionId) {
+          res.setHeader('X-Seal-Encryption-Id', (result as any).encryptionId);
+        }
+        this.logger.warn(`Downloading encrypted file: ${result.filename} - file may need decryption`);
       }
 
       // Send the file data
@@ -388,6 +408,15 @@ export class FileController {
         res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
       }
 
+      // Add encryption status header if encrypted
+      if (result.isEncrypted) {
+        res.setHeader('X-File-Encrypted', 'true');
+        if ((result as any).encryptionId) {
+          res.setHeader('X-Seal-Encryption-Id', (result as any).encryptionId);
+        }
+        this.logger.warn(`Downloading encrypted file: ${result.filename} - file may need decryption`);
+      }
+
       // Send the file data
       res.send(result.fileData);
     } catch (error) {
@@ -514,14 +543,17 @@ export class FileController {
   @UseGuards(AuthGuard)
   async downloadEncryptedFile(
     @Param('cid') cid: string,
-    @Body() body: { secretKey: string },
+    @Body() body: { secretKey?: string },
     @Headers('authorization') authorization: string,
     @CurrentUser() user: any,
     @Res() res: Response
   ) {
     try {
       const token = authorization.substring(7); // Remove 'Bearer ' prefix
-      const result = await this.fileService.downloadEncryptedFile(token, cid, body.secretKey);
+      
+      // For Mysten SEAL encrypted files, try decryption without sessionKey/txBytes
+      // as the backend handles the full encryption/decryption cycle
+      const result = await this.fileService.downloadAndDecryptSeal(token, cid);
 
       if (!result.success) {
         throw new HttpException(result.message, HttpStatus.BAD_REQUEST);
@@ -682,6 +714,9 @@ export class FileController {
       // Add encryption status header
       if (result.isEncrypted) {
         res.setHeader('X-File-Encrypted', 'true');
+        if ((result as any).encryptionId) {
+          res.setHeader('X-Seal-Encryption-Id', (result as any).encryptionId);
+        }
         this.logger.warn(`Downloading encrypted file: ${result.filename} - file may need decryption`);
       }
 

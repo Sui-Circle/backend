@@ -189,8 +189,8 @@ export class AccessControlController {
 
       const request: ValidateAccessRequest = {
         fileCid,
-        userAddress: userInfo.zkLoginAddress,
-        userEmail: userInfo.email,
+        userAddress: 'zkLoginAddress' in userInfo ? userInfo.zkLoginAddress : userInfo.walletAddress,
+        userEmail: 'email' in userInfo ? userInfo.email : undefined,
       };
 
       const result = await this.accessControlService.validateAccess(token, request);
@@ -199,8 +199,8 @@ export class AccessControlController {
         success: result.success,
         data: {
           accessGranted: result.accessGranted,
-          userAddress: userInfo.zkLoginAddress,
-          userEmail: userInfo.email,
+          userAddress: 'zkLoginAddress' in userInfo ? userInfo.zkLoginAddress : userInfo.walletAddress,
+          userEmail: 'email' in userInfo ? userInfo.email : undefined,
         },
         message: result.message,
       };

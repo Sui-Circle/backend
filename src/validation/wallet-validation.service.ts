@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth/zklogin.service';
+import { WalletUser } from '../auth/auth.service';
 
 export interface WalletValidationResult {
   isValid: boolean;
@@ -12,10 +13,44 @@ export interface WalletValidationResult {
 export class WalletValidationService {
   private readonly logger = new Logger(WalletValidationService.name);
 
+  private isZkLoginUser(user: AuthenticatedUser | WalletUser): user is AuthenticatedUser {
+    return 'zkLoginAddress' in user;
+  }
+
+  private getUserAddress(user: AuthenticatedUser | WalletUser): string {
+    return 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+  }
+
+  /**
+   * Validate wallet authentication
+   */
+  validateWalletAuthentication(user: WalletUser): WalletValidationResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    if (!user.walletAddress) {
+      errors.push('Wallet address is missing');
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors,
+      warnings,
+      userAddress: user.walletAddress
+    };
+  }
+
   /**
    * Validate that user has proper zkLogin authentication for wallet operations
+   * This method now handles both zkLogin and wallet authentication
    */
-  validateZkLoginAuthentication(user: AuthenticatedUser): WalletValidationResult {
+  validateZkLoginAuthentication(user: AuthenticatedUser | WalletUser): WalletValidationResult {
+    // Check if it's a wallet user
+    if ('walletAddress' in user) {
+      return this.validateWalletAuthentication(user as WalletUser);
+    }
+    
+    // For zkLogin users, continue with the original validation
     const errors: string[] = [];
     const warnings: string[] = [];
     const isDevelopment = process.env.NODE_ENV !== 'production';
@@ -37,7 +72,8 @@ export class WalletValidationService {
       errors.push('User salt is missing');
     }
 
-    if (!user.zkLoginAddress) {
+    // Only check zkLoginAddress if it's a zkLogin user
+    if ('zkLoginAddress' in user && !user.zkLoginAddress) {
       errors.push('zkLogin address is missing');
     }
 
@@ -116,8 +152,11 @@ export class WalletValidationService {
       }
     }
 
-    // Validate zkLogin address format
-    if (user.zkLoginAddress) {
+    // Get user address (either wallet or zkLogin)
+    const userAddress = this.getUserAddress(user);
+    
+    // Validate zkLogin address format if it's a zkLogin user
+    if ('zkLoginAddress' in user && user.zkLoginAddress) {
       if (!user.zkLoginAddress.startsWith('0x')) {
         errors.push('zkLogin address should start with 0x');
       }
@@ -130,25 +169,25 @@ export class WalletValidationService {
     const isValid = errors.length === 0;
 
     if (!isValid) {
-      this.logger.error('zkLogin authentication validation failed:', {
+      this.logger.error('Authentication validation failed:', {
         errors,
         warnings,
-        userAddress: user.zkLoginAddress,
+        userAddress,
       });
     } else if (warnings.length > 0) {
-      this.logger.warn('zkLogin authentication validation has warnings:', {
+      this.logger.warn('Authentication validation has warnings:', {
         warnings,
-        userAddress: user.zkLoginAddress,
+        userAddress,
       });
     } else {
-      this.logger.log(`✅ zkLogin authentication validation passed for address: ${user.zkLoginAddress}`);
+      this.logger.log(`✅ Authentication validation passed for address: ${userAddress}`);
     }
 
     return {
       isValid,
       errors,
       warnings,
-      userAddress: user.zkLoginAddress,
+      userAddress,
     };
   }
 

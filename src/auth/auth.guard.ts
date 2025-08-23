@@ -7,16 +7,18 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
+import { WalletUser } from './auth.service';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
-    zkLoginAddress: string;
+    zkLoginAddress?: string;
+    walletAddress?: string;
     provider: string;
     email?: string;
     name?: string;
-    sub: string;
-    aud: string;
-    iss: string;
+    sub?: string;
+    aud?: string;
+    iss?: string;
   };
 }
 

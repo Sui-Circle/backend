@@ -1,18 +1,25 @@
 import { Injectable, Logger } from '@nestjs/common';
+import * as fs from 'fs';
+import * as path from 'path';
 import { SuiService } from '../sui/sui.service';
 import { AuthService } from '../auth/auth.service';
 import { WalrusService } from '../storage/walrus/walrus.service';
 import { SealService } from '../storage/seal/seal.service';
 import { AccessControlService } from '../access-control/access-control.service';
 import { WalletValidationService } from '../validation/wallet-validation.service';
+import { TextDecoder } from 'util';
 
 export interface FileUploadRequest {
   filename: string;
   fileSize: number;
   contentType: string;
   fileData: Buffer; // Raw file data to upload to Walrus
-  walrusCid?: string; // Optional - will be generated if not provided
+  walrusCid?: string; // Optional  will be generated if not provided
   enableEncryption?: boolean; // Whether to encrypt the file with SEAL
+  walrusOptions?: {
+    epochs?: number; // number of epochs to store; if omitted, store for max by default
+    deletable?: boolean; // if omitted, default false (nondeletable)
+  };
 }
 
 export interface EncryptedFileUploadRequest extends FileUploadRequest {
@@ -61,7 +68,7 @@ export interface FileAccessResponse {
 export class FileService {
   private readonly logger = new Logger(FileService.name);
 
-  // In-memory storage for uploaded files (for testing)
+  // Inmemory storage for uploaded files (for testing)
   private uploadedFiles: Map<string, Array<{
     cid: string;
     filename: string;
@@ -76,7 +83,11 @@ export class FileService {
     };
   }>> = new Map();
 
-  // In-memory storage for test mode files
+  // Persistence to survive restarts
+  private readonly dataDir = path.resolve(process.cwd(), 'data');
+  private readonly persistenceFile = path.join(this.dataDir, 'uploads.json');
+
+  // Inmemory storage for test mode files
   private testModeFiles: Array<{
     cid: string;
     filename: string;
@@ -100,8 +111,45 @@ export class FileService {
     private readonly walletValidationService: WalletValidationService
   ) {}
 
+  // Load persisted uploads from disk on first use
+  private ensureLoadedFromDisk(): void {
+    try {
+      if (this.uploadedFiles.size > 0) return;
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+      if (fs.existsSync(this.persistenceFile)) {
+        const raw = fs.readFileSync(this.persistenceFile, 'utf8');
+        if (raw) {
+          const parsed: Record<string, any[]> = JSON.parse(raw);
+          Object.entries(parsed).forEach(([address, files]) => {
+            this.uploadedFiles.set(address, files as any[]);
+          });
+          this.logger.log(`Loaded persisted uploads for ${this.uploadedFiles.size} user(s)`);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to load persisted uploads:', error as any);
+    }
+  }
+
+  private persistToDisk(): void {
+    try {
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+      const asObject: Record<string, any[]> = {};
+      for (const [address, files] of this.uploadedFiles.entries()) {
+        asObject[address] = files;
+      }
+      fs.writeFileSync(this.persistenceFile, JSON.stringify(asObject, null, 2), 'utf8');
+    } catch (error) {
+      this.logger.error('Failed to persist uploads to disk:', error as any);
+    }
+  }
+
   /**
-   * Upload a file with zkLogin authentication
+   * Upload a file with wallet authentication
    */
   async uploadFile(
     token: string,
@@ -120,22 +168,22 @@ export class FileService {
         };
       }
 
-      // Validate zkLogin authentication
-      const validationResult = this.walletValidationService.validateZkLoginAuthentication(user);
-      if (!validationResult.isValid) {
-        this.logger.error('zkLogin validation failed:', validationResult.errors);
+      // Get user address (either wallet or zkLogin)
+      const isWalletAuth = 'walletAddress' in user;
+      const userAddress = isWalletAuth ? user.walletAddress : user.zkLoginAddress;
+      if (!userAddress) {
         return {
           success: false,
           fileCid: '',
           transactionDigest: '',
           walrusCid: uploadRequest.walrusCid || '',
-          message: `Authentication validation failed: ${validationResult.errors.join(', ')}`,
+          message: 'No valid wallet address found',
         };
       }
-
+      
       // Check for admin address usage
       const adminValidation = this.walletValidationService.validateNoAdminAddressUsage(
-        user.zkLoginAddress,
+        userAddress,
         'file_upload'
       );
       if (!adminValidation.isValid) {
@@ -192,18 +240,10 @@ export class FileService {
       if (!walrusCid) {
         this.logger.log(`Uploading file to Walrus: ${uploadRequest.filename}${uploadRequest.enableEncryption ? ' (encrypted)' : ''}`);
 
-        let walrusResult: any;
+        let walrusResult: import('../storage/walrus/walrus.service').WalrusUploadResult;
 
-        // Check if user has zkLogin transaction parameters for signing
-        this.logger.log('🔍 Checking zkLogin parameters for user:', {
-          hasEphemeralKeyPair: !!user.ephemeralKeyPair,
-          hasZkLoginProof: !!user.zkLoginProof,
-          hasJwt: !!user.jwt,
-          hasUserSalt: !!user.userSalt,
-          zkLoginAddress: user.zkLoginAddress,
-        });
-
-        if (user.ephemeralKeyPair && user.zkLoginProof && user.jwt && user.userSalt) {
+        // If zkLogin user and has parameters, use zkLogin upload; otherwise use regular upload
+        if (!isWalletAuth && 'zkLoginAddress' in user && user.ephemeralKeyPair && user.jwt && user.userSalt) {
           this.logger.log('✅ Using zkLogin signature for Walrus upload');
 
           const zkLoginParams = {
@@ -217,25 +257,23 @@ export class FileService {
             dataToUpload,
             uploadRequest.filename,
             zkLoginParams,
-            uploadRequest.contentType
+            uploadRequest.contentType,
+            {
+              epochs: uploadRequest.walrusOptions?.epochs,
+              deletable: uploadRequest.walrusOptions?.deletable ?? false,
+            }
           );
         } else {
-          this.logger.error('❌ zkLogin parameters not available - cannot upload without user authentication');
-          this.logger.error('Missing zkLogin parameters:', {
-            missingEphemeralKeyPair: !user.ephemeralKeyPair,
-            missingZkLoginProof: !user.zkLoginProof,
-            missingJwt: !user.jwt,
-            missingUserSalt: !user.userSalt,
-          });
-
-          // Do not fallback to admin signer - require proper user authentication
-          return {
-            success: false,
-            fileCid: '',
-            transactionDigest: '',
-            walrusCid: '',
-            message: 'User authentication required: zkLogin parameters missing. Please log in again.',
-          };
+          this.logger.log('➡️ Using regular Walrus upload');
+          walrusResult = await this.walrusService.uploadFile(
+            dataToUpload,
+            uploadRequest.filename,
+            uploadRequest.contentType,
+            {
+              epochs: uploadRequest.walrusOptions?.epochs,
+              deletable: uploadRequest.walrusOptions?.deletable ?? false,
+            }
+          );
         }
 
         if (!walrusResult.success) {
@@ -266,10 +304,60 @@ export class FileService {
       // Upload file metadata to smart contract with user paying fees
       this.logger.log('User will pay transaction fees for smart contract upload');
 
-      // Check required zkLogin parameters (temporarily allowing without proof for debugging)
+      // Check if we're using wallet authentication or zkLogin
+      // (userAddress already computed above)
+      
+      this.logger.log('Authentication type:', {
+        isWalletAuth,
+        userAddress,
+      });
+      
+      if (isWalletAuth) {
+        // For wallet authentication, user will sign transaction directly with their wallet
+        // We'll use the walletAddress for the upload
+        this.logger.log(`Using wallet authentication for file upload: ${userAddress}`);
+        
+        // Call the SUI service with wallet address
+        const transactionDigest = await this.suiService.uploadFileWithWallet(
+          userAddress,
+          walrusCid,
+          uploadRequest.filename,
+          uploadRequest.fileSize
+        );
+
+        // Store file metadata in memory for listing (walletauth path)
+        const userFiles = this.uploadedFiles.get(userAddress) || [];
+        userFiles.push({
+          cid: walrusCid,
+          filename: uploadRequest.filename,
+          fileSize: uploadRequest.fileSize,
+          uploadTimestamp: Date.now(),
+          uploader: userAddress,
+          isOwner: true,
+          isEncrypted: uploadRequest.enableEncryption,
+          encryptionKeys: encryptionKeys
+            ? {
+                publicKey: encryptionKeys.encryptionId,
+                secretKey: encryptionKeys.symmetricKey,
+              }
+            : undefined,
+        });
+        this.uploadedFiles.set(userAddress, userFiles);
+        this.persistToDisk();
+
+        return {
+          success: true,
+          fileCid: walrusCid,
+          transactionDigest,
+          walrusCid,
+          message: 'File uploaded successfully',
+        };
+      }
+      
+      // For zkLogin authentication
       const hasRequiredParams = user.ephemeralKeyPair && user.jwt && user.userSalt;
 
-      this.logger.log('Smart contract upload parameter check:', {
+      this.logger.log('zkLogin parameter check:', {
         hasEphemeralKeyPair: !!user.ephemeralKeyPair,
         hasZkLoginProof: !!user.zkLoginProof,
         hasJwt: !!user.jwt,
@@ -311,17 +399,17 @@ export class FileService {
       );
 
       this.logger.log(
-        `File metadata uploaded to smart contract: ${uploadRequest.filename} by ${user.zkLoginAddress}`
+        `File metadata uploaded to smart contract: ${uploadRequest.filename} by ${userAddress}`
       );
 
       // Store file metadata in memory for listing
-      const userFiles = this.uploadedFiles.get(user.zkLoginAddress) || [];
+      const userFiles = this.uploadedFiles.get(userAddress) || [];
       userFiles.push({
         cid: walrusCid,
         filename: uploadRequest.filename,
         fileSize: uploadRequest.fileSize,
         uploadTimestamp: Date.now(),
-        uploader: user.zkLoginAddress,
+        uploader: userAddress,
         isOwner: true,
         isEncrypted: uploadRequest.enableEncryption,
         encryptionKeys: encryptionKeys ? {
@@ -329,7 +417,8 @@ export class FileService {
           secretKey: encryptionKeys.symmetricKey,
         } : undefined,
       });
-      this.uploadedFiles.set(user.zkLoginAddress, userFiles);
+      this.uploadedFiles.set(userAddress, userFiles);
+      this.persistToDisk();
 
       return {
         success: true,
@@ -375,12 +464,14 @@ export class FileService {
       );
 
       // Check access control rules
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      const userEmail = 'zkLoginAddress' in user ? (user.email || '') : undefined;
       const accessControlResult = await this.accessControlService.validateAccess(
         token,
         {
           fileCid: accessRequest.fileCid,
-          userAddress: user.zkLoginAddress,
-          userEmail: user.email,
+          userAddress,
+          userEmail,
         }
       );
 
@@ -408,9 +499,7 @@ export class FileService {
         };
       }
 
-      this.logger.log(
-        `File access granted: ${accessRequest.fileCid} for ${user.zkLoginAddress}`
-      );
+      this.logger.log(`File access granted: ${accessRequest.fileCid}`);
 
       return {
         success: true,
@@ -452,16 +541,17 @@ export class FileService {
         };
       }
 
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+
       // Grant access through smart contract
       const transactionDigest = await this.suiService.grantFileAccess(
-        user.zkLoginAddress,
+        userAddress,
         fileCid,
         recipientAddress
       );
 
-      this.logger.log(
-        `Access granted: ${fileCid} from ${user.zkLoginAddress} to ${recipientAddress}`
-      );
+      this.logger.log(`Access granted: ${fileCid} to ${recipientAddress}`);
 
       return {
         success: true,
@@ -495,16 +585,17 @@ export class FileService {
         };
       }
 
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+
       // Revoke access through smart contract
       const transactionDigest = await this.suiService.revokeFileAccess(
-        user.zkLoginAddress,
+        userAddress,
         fileCid,
         addressToRemove
       );
 
-      this.logger.log(
-        `Access revoked: ${fileCid} by ${user.zkLoginAddress} for ${addressToRemove}`
-      );
+      this.logger.log(`Access revoked: ${fileCid} for ${addressToRemove}`);
 
       return {
         success: true,
@@ -533,6 +624,7 @@ export class FileService {
     contentType?: string;
     message: string;
     isEncrypted?: boolean;
+    encryptionId?: string;
   }> {
     try {
       // Verify user authentication and access
@@ -555,35 +647,46 @@ export class FileService {
         };
       }
 
-      // Check if file is encrypted by checking if it's a Mysten SEAL encrypted object
-      let fileData = Buffer.from(downloadResult.data!);
+      // Prepare variables for return and detection
       let isEncrypted = false;
+      const fileData = Buffer.from(downloadResult.data || new Uint8Array());
 
+      // Check if file is encrypted by trying to decode as UTF8
       try {
-        // Mysten SEAL encrypted objects are binary data, not JSON
-        // We can detect them by trying to parse with the SEAL library
-        // For now, we'll use a simple heuristic: if it's not valid UTF-8 text
-        // and doesn't look like a common file format, assume it's encrypted
-        const dataStr = new TextDecoder('utf-8', { fatal: true }).decode(downloadResult.data!);
+        const dataStr = new TextDecoder('utf8', { fatal: true }).decode(fileData);
 
-        // If we can decode it as UTF-8 and it looks like JSON with old format, it's old encryption
+        // If we can decode it as UTF8 and it looks like JSON with old format, it's old encryption
         try {
           const metadata = JSON.parse(dataStr);
           if (metadata.chunks && metadata.scheme === 'BFV') {
-            // This is old Microsoft SEAL format - not supported anymore
-            this.logger.warn(`Detected old Microsoft SEAL encrypted file: ${fileCid} - not supported`);
+            // This is old Microsoft SEAL format  not supported anymore
+            this.logger.warn(`Detected old Microsoft SEAL encrypted file: ${fileCid}  not supported`);
+            isEncrypted = true;
           }
         } catch {
           // Not JSON, probably regular text file
         }
       } catch (error) {
-        // Failed to decode as UTF-8, likely binary data (could be encrypted or regular binary file)
+        // Failed to decode as UTF8, likely binary data (could be encrypted or regular binary file)
         // For Mysten SEAL, we'll assume binary data that's not a known format is encrypted
         isEncrypted = true;
         this.logger.log(`Detected potential Mysten SEAL encrypted file: ${fileCid}`);
       }
 
       this.logger.log(`File downloaded successfully: ${fileCid}${isEncrypted ? ' (encrypted)' : ''}`);
+
+      // Try to retrieve encryptionId from stored metadata if encrypted
+      let encryptionId: string | undefined = undefined;
+      if (isEncrypted) {
+        const stored = await this.getStoredFileMetadata(fileCid);
+        const pubKey = stored?.encryptionKeys?.publicKey;
+        if (pubKey) {
+          encryptionId = pubKey;
+          this.logger.log(`Found encryptionId for ${fileCid}: ${encryptionId}`);
+        } else {
+          this.logger.warn(`No encryptionId found in stored metadata for ${fileCid}`);
+        }
+      }
 
       return {
         success: true,
@@ -592,6 +695,7 @@ export class FileService {
         contentType: 'application/octet-stream',
         message: 'File downloaded successfully',
         isEncrypted, // Add this field to indicate if file is encrypted
+        encryptionId,
       };
     } catch (error) {
       this.logger.error(`Failed to download file ${fileCid}:`, error);
@@ -668,9 +772,154 @@ export class FileService {
   }
 
   /**
+   * Download and decrypt a Mysten SEAL encrypted file
+   * This method handles the complete flow for backend-encrypted files
+   */
+  async downloadAndDecryptSeal(
+    token: string,
+    fileCid: string
+  ): Promise<{
+    success: boolean;
+    fileData?: Buffer;
+    filename?: string;
+    contentType?: string;
+    message: string;
+  }> {
+    try {
+      // First download the encrypted file
+      const downloadResult = await this.downloadFile(token, fileCid);
+
+      if (!downloadResult.success) {
+        return downloadResult;
+      }
+
+      // Prepare cleaned filename without .encrypted suffix for any outputs
+      const cleanedFilename = downloadResult.filename
+        ? downloadResult.filename.replace(/\.encrypted$/, '')
+        : undefined;
+
+      // Check if file is actually encrypted
+      if (!downloadResult.isEncrypted) {
+        // File is not encrypted, return as-is (but clean filename if it had .encrypted suffix)
+        return {
+          success: true,
+          fileData: downloadResult.fileData,
+          filename: cleanedFilename,
+          contentType: downloadResult.contentType,
+          message: 'File downloaded (not encrypted)',
+        };
+      }
+
+      // Get stored encryption metadata for this file
+      const fileMetadata = await this.getStoredFileMetadata(fileCid);
+      if (!fileMetadata?.encryptionKeys) {
+        return {
+          success: false,
+          message: 'No encryption metadata found for this file',
+        };
+      }
+
+      this.logger.log(`Attempting to decrypt Mysten SEAL file: ${fileCid}`);
+
+      // For Mysten SEAL files encrypted by our backend, we need to use a different approach
+      // Since the backend encrypted the file, it should be able to decrypt it using the stored metadata
+      
+      // Try to parse the encrypted data to see if it contains SEAL metadata
+      try {
+        const encryptedData = new Uint8Array(downloadResult.fileData!);
+        
+        // Create a minimal session key and tx bytes for SEAL decryption
+        // In a real production system, these would be properly managed
+        const mockSessionKey = { 
+          // This is a simplified approach - in production you'd need proper session management
+          data: new Uint8Array(32) // Mock 32-byte key
+        };
+        const mockTxBytes = new Uint8Array(64); // Mock transaction bytes
+
+        // Attempt decryption with SEAL service
+        const decryptionResult = await this.sealService.decryptFile(
+          encryptedData,
+          mockSessionKey as any,
+          mockTxBytes
+        );
+
+        if (decryptionResult.success) {
+          this.logger.log(`File decrypted successfully with SEAL: ${fileCid}`);
+          return {
+            success: true,
+            fileData: Buffer.from(decryptionResult.decryptedData!),
+            filename: cleanedFilename,
+            contentType: downloadResult.contentType,
+            message: 'File downloaded and decrypted successfully',
+          };
+        } else {
+          // SEAL decryption failed, check if it's client-side encrypted data
+          this.logger.warn(`SEAL decryption failed: ${decryptionResult.error}`);
+        }
+      } catch (sealError) {
+        this.logger.warn(`SEAL decryption error: ${sealError.message}`);
+      }
+
+      // Try to parse as client-side encrypted JSON (fallback for mock encryption)
+      try {
+        const dataStr = new TextDecoder().decode(downloadResult.fileData!);
+        const metadata = JSON.parse(dataStr);
+        
+        if (metadata.algorithm === 'Seal-BFV' && metadata.encryptedChunks) {
+          // This is client-side mock encrypted data
+          this.logger.log(`Decrypting client-side mock encrypted file: ${fileCid}`);
+          const originalData = new Uint8Array(metadata.encryptedChunks[0]);
+          
+          return {
+            success: true,
+            fileData: Buffer.from(originalData),
+            filename: cleanedFilename,
+            contentType: downloadResult.contentType,
+            message: 'File downloaded and decrypted (mock encryption)',
+          };
+        }
+      } catch (parseError) {
+        // Not JSON, continue to other methods
+      }
+
+      return {
+        success: false,
+        message: 'Unable to decrypt file - unknown encryption format',
+      };
+    } catch (error) {
+      this.logger.error(`Failed to download and decrypt SEAL file ${fileCid}:`, error);
+      return {
+        success: false,
+        message: `Failed to download and decrypt file: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Get stored file metadata for a given CID
+   */
+  private async getStoredFileMetadata(fileCid: string): Promise<any> {
+    // Check in-memory storage first
+    for (const [userAddress, files] of this.uploadedFiles.entries()) {
+      const file = files.find(f => f.cid === fileCid);
+      if (file) {
+        return file;
+      }
+    }
+
+    // Check test mode files
+    const testFile = this.testModeFiles.find(f => f.cid === fileCid);
+    if (testFile) {
+      return testFile;
+    }
+
+    return null;
+  }
+
+  /**
    * Download and decrypt an encrypted file (Legacy method)
    * Note: This method is deprecated for Mysten SEAL.
-   * Use downloadAndDecryptFile with proper session keys and transaction bytes.
+   * Use downloadAndDecryptSeal for backend-encrypted files.
    */
   async downloadEncryptedFile(
     token: string,
@@ -683,7 +932,7 @@ export class FileService {
     contentType?: string;
     message: string;
   }> {
-    this.logger.warn('downloadEncryptedFile is deprecated for Mysten SEAL. Use downloadAndDecryptFile instead.');
+    this.logger.warn('downloadEncryptedFile is deprecated for Mysten SEAL. Use downloadAndDecryptSeal instead.');
 
     return {
       success: false,
@@ -737,7 +986,7 @@ export class FileService {
       if (!walrusCid) {
         this.logger.log(`Uploading file to Walrus: ${uploadRequest.filename}${uploadRequest.enableEncryption ? ' (encrypted)' : ''}`);
 
-        // For no-auth uploads, always use regular upload (no zkLogin)
+        // For noauth uploads, always use regular upload (no zkLogin)
         const walrusResult = await this.walrusService.uploadFile(
           dataToUpload,
           uploadRequest.filename,
@@ -762,7 +1011,7 @@ export class FileService {
       const mockTransactionDigest = `mock_tx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
       this.logger.log(
-        `File upload completed (no-auth mode): ${uploadRequest.filename} -> ${walrusCid}`
+        `File upload completed (noauth mode): ${uploadRequest.filename} > ${walrusCid}`
       );
 
       // Store file metadata in test mode storage
@@ -771,7 +1020,7 @@ export class FileService {
         filename: uploadRequest.filename,
         fileSize: uploadRequest.fileSize,
         uploadTimestamp: Date.now(),
-        uploader: 'test-user',
+        uploader: 'testuser',
         isOwner: true,
         isEncrypted: uploadRequest.enableEncryption,
         encryptionKeys: undefined, // Test mode doesn't store encryption keys
@@ -782,10 +1031,10 @@ export class FileService {
         fileCid: walrusCid,
         transactionDigest: mockTransactionDigest,
         walrusCid,
-        message: 'File uploaded successfully (no-auth mode)',
+        message: 'File uploaded successfully (noauth mode)',
       };
     } catch (error) {
-      this.logger.error('Failed to upload file (no-auth)', error);
+      this.logger.error('Failed to upload file (noauth)', error);
       return {
         success: false,
         fileCid: '',
@@ -807,6 +1056,8 @@ export class FileService {
     filename?: string;
     contentType?: string;
     message: string;
+   isEncrypted?: boolean;
+   encryptionId?: string;
   }> {
     try {
       this.logger.log(`Downloading file without auth: ${fileCid}`);
@@ -821,7 +1072,38 @@ export class FileService {
         };
       }
 
-      this.logger.log(`File downloaded successfully: ${fileCid}`);
+      // Detect encryption similar to authenticated path
+      let isEncrypted = false;
+      try {
+        const dataStr = new TextDecoder('utf8', { fatal: true }).decode(downloadResult.data!);
+        try {
+          const metadata = JSON.parse(dataStr);
+          if (metadata.chunks && metadata.scheme === 'BFV') {
+            this.logger.warn(`Detected old Microsoft SEAL encrypted file: ${fileCid}  not supported`);
+            isEncrypted = true;
+          }
+        } catch {
+          // Not JSON, probably regular text file
+        }
+      } catch {
+        isEncrypted = true; // binary not utf8
+        this.logger.log(`Detected potential Mysten SEAL encrypted file: ${fileCid}`);
+      }
+
+      this.logger.log(`File downloaded successfully: ${fileCid}${isEncrypted ? ' (encrypted)' : ''}`);
+
+      // Try to retrieve encryptionId from stored metadata if encrypted
+      let encryptionId: string | undefined = undefined;
+      if (isEncrypted) {
+        const stored = await this.getStoredFileMetadata(fileCid);
+        const pubKey = stored?.encryptionKeys?.publicKey;
+        if (pubKey) {
+          encryptionId = pubKey;
+          this.logger.log(`Found encryptionId for ${fileCid}: ${encryptionId}`);
+        } else {
+          this.logger.warn(`No encryptionId found in stored metadata for ${fileCid}`);
+        }
+      }
 
       return {
         success: true,
@@ -829,6 +1111,8 @@ export class FileService {
         filename: `file_${fileCid.substring(0, 8)}.bin`, // Generate a filename
         contentType: 'application/octet-stream',
         message: 'File downloaded successfully',
+        isEncrypted,
+        encryptionId,
       };
     } catch (error) {
       this.logger.error(`Failed to download file ${fileCid}:`, error);
@@ -865,10 +1149,15 @@ export class FileService {
         };
       }
 
-      this.logger.log(`Listing files for user ${user.zkLoginAddress}`);
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      this.logger.log(`Listing files for user ${userAddress}`);
 
-      // Get files from in-memory storage
-      const userFiles = this.uploadedFiles.get(user.zkLoginAddress) || [];
+      // Ensure inmemory cache loaded from disk
+      this.ensureLoadedFromDisk();
+
+      // Get user files from memory/disk cache
+      const userFiles = this.uploadedFiles.get(userAddress) || [];
 
       return {
         success: true,
@@ -901,7 +1190,7 @@ export class FileService {
     message: string;
   }> {
     try {
-      this.logger.log('Listing files (no auth - test mode)');
+      this.logger.log('Listing files (no auth  test mode)');
 
       return {
         success: true,
@@ -935,12 +1224,14 @@ export class FileService {
         };
       }
 
-      this.logger.log(`Clearing files for user ${user.zkLoginAddress}`);
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      this.logger.log(`Clearing files for user ${userAddress}`);
 
       // Clear user files from memory
-      const userFiles = this.uploadedFiles.get(user.zkLoginAddress) || [];
+      const userFiles = this.uploadedFiles.get(userAddress) || [];
       const fileCount = userFiles.length;
-      this.uploadedFiles.delete(user.zkLoginAddress);
+      this.uploadedFiles.delete(userAddress);
 
       return {
         success: true,
@@ -963,7 +1254,7 @@ export class FileService {
     message: string;
   }> {
     try {
-      this.logger.log('Clearing files (no auth - test mode)');
+      this.logger.log('Clearing files (no auth  test mode)');
 
       // Clear test mode files
       const fileCount = this.testModeFiles.length;
@@ -995,6 +1286,7 @@ export class FileService {
     contentType?: string;
     message: string;
     isEncrypted?: boolean;
+    encryptionId?: string;
   }> {
     try {
       this.logger.log(`Downloading shared file: ${shareId}`);
@@ -1037,36 +1329,36 @@ export class FileService {
       let fileData = Buffer.from(downloadResult.data);
       let isEncrypted = false;
 
-      // Check if file is encrypted by trying to decode as UTF-8
+      // Check if file is encrypted by trying to decode as UTF8
       try {
-        const dataStr = new TextDecoder('utf-8', { fatal: true }).decode(downloadResult.data);
+        const dataStr = new TextDecoder('utf8', { fatal: true }).decode(downloadResult.data);
 
-        // If we can decode it as UTF-8 and it looks like JSON with old format, it's old encryption
+        // If we can decode it as UTF8 and it looks like JSON with old format, it's old encryption
         try {
           const metadata = JSON.parse(dataStr);
           if (metadata.chunks && metadata.scheme === 'BFV') {
-            // This is old Microsoft SEAL format - not supported anymore
-            this.logger.warn(`Detected old Microsoft SEAL encrypted file: ${fileCid} - not supported`);
+            // This is old Microsoft SEAL format  not supported anymore
+            this.logger.warn(`Detected old Microsoft SEAL encrypted file: ${fileCid}  not supported`);
             isEncrypted = true;
           }
         } catch {
           // Not JSON, probably regular text file
         }
       } catch (error) {
-        // Failed to decode as UTF-8, likely binary data (could be encrypted or regular binary file)
+        // Failed to decode as UTF8, likely binary data (could be encrypted or regular binary file)
         // For Mysten SEAL, we'll assume binary data that's not a known format is encrypted
         isEncrypted = true;
         this.logger.log(`Detected potential Mysten SEAL encrypted file: ${fileCid}`);
       }
 
-      // Try to get file metadata from in-memory storage for better filename
-      let filename = shareValidation.data?.filename || `shared-file-${fileCid.substring(0, 8)}`;
+      // Try to get file metadata from inmemory storage for better filename
+      let filename = shareValidation.data?.filename || `sharedfile${fileCid.substring(0, 8)}`;
       let foundInMemory = false;
 
       this.logger.log(`Looking up file metadata for fileCid: ${fileCid}`);
       this.logger.log(`Initial filename from shareValidation: ${shareValidation.data?.filename || 'none'}`);
 
-      // Try in-memory storage for file metadata
+      // Try inmemory storage for file metadata
       {
         // Check all user files in memory
         this.logger.log(`Checking ${this.uploadedFiles.size} user file collections in memory`);
@@ -1078,7 +1370,7 @@ export class FileService {
             filename = foundFile.filename.replace(/\.encrypted$/, '');
             isEncrypted = foundFile.isEncrypted || isEncrypted;
             foundInMemory = true;
-            this.logger.log(`✅ Found file in user storage: ${foundFile.filename} -> ${filename} (encrypted: ${isEncrypted})`);
+            this.logger.log(`✅ Found file in user storage: ${foundFile.filename} > ${filename} (encrypted: ${isEncrypted})`);
             break;
           }
         }
@@ -1091,7 +1383,7 @@ export class FileService {
           filename = testFile.filename.replace(/\.encrypted$/, '');
           isEncrypted = testFile.isEncrypted || isEncrypted;
           foundInMemory = true;
-          this.logger.log(`✅ Found file in test storage: ${testFile.filename} -> ${filename} (encrypted: ${isEncrypted})`);
+          this.logger.log(`✅ Found file in test storage: ${testFile.filename} > ${filename} (encrypted: ${isEncrypted})`);
         }
 
         if (!foundInMemory) {
@@ -1110,17 +1402,30 @@ export class FileService {
       if (isEncrypted) {
         // For now, we can't automatically decrypt Mysten SEAL files without session keys
         // But we can provide helpful information
-        message = 'Encrypted file downloaded - this file was encrypted during upload and may require the file owner to provide decryption access';
-        this.logger.warn(`Downloaded encrypted file: ${filename} - automatic decryption not available for shared files`);
+        message = 'Encrypted file downloaded  this file was encrypted during upload and may require the file owner to provide decryption access';
+        this.logger.warn(`Downloaded encrypted file: ${filename}  automatic decryption not available for shared files`);
 
         // TODO: In the future, implement a mechanism where file owners can provide
         // decryption access for shared files, possibly through:
         // 1. Storing decryption keys with access control
-        // 2. Using proxy re-encryption
-        // 3. Having the owner decrypt and re-share
+        // 2. Using proxy reencryption
+        // 3. Having the owner decrypt and reshare
       }
 
-      this.logger.log(`Shared file downloaded successfully: ${shareId} -> ${filename}${isEncrypted ? ' (encrypted)' : ''}`);
+      this.logger.log(`Shared file downloaded successfully: ${shareId} > ${filename}${isEncrypted ? ' (encrypted)' : ''}`);
+
+      // Try to retrieve encryptionId from stored metadata if encrypted
+      let encryptionId: string | undefined = undefined;
+      if (isEncrypted) {
+        const stored = await this.getStoredFileMetadata(fileCid);
+        const pubKey = stored?.encryptionKeys?.publicKey;
+        if (pubKey) {
+          encryptionId = pubKey;
+          this.logger.log(`Found encryptionId for ${fileCid}: ${encryptionId}`);
+        } else {
+          this.logger.warn(`No encryptionId found in stored metadata for ${fileCid}`);
+        }
+      }
 
       return {
         success: true,
@@ -1129,9 +1434,10 @@ export class FileService {
         contentType,
         message,
         isEncrypted,
+        encryptionId,
       };
     } catch (error) {
-      this.logger.error(`Failed to download shared file ${shareId}:`, error);
+      this.logger.error('Failed to download shared file', error);
       return {
         success: false,
         message: `Failed to download shared file: ${error.message}`,

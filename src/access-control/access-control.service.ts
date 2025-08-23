@@ -89,7 +89,9 @@ export class AccessControlService {
         };
       }
 
-      this.logger.log(`Creating access control for file ${request.fileCid} by ${user.zkLoginAddress}`);
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      this.logger.log(`Creating access control for file ${request.fileCid} by ${userAddress}`);
 
       // Validate access rule
       const validationResult = this.validateAccessRule(request.accessRule);
@@ -102,7 +104,7 @@ export class AccessControlService {
 
       // Create access control on smart contract
       const transactionDigest = await this.suiService.createFileAccessControl(
-        user.zkLoginAddress,
+        userAddress,
         request.fileCid,
         request.accessRule
       );
@@ -140,7 +142,9 @@ export class AccessControlService {
         };
       }
 
-      this.logger.log(`Updating access control for file ${request.fileCid} by ${user.zkLoginAddress}`);
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      this.logger.log(`Updating access control for file ${request.fileCid} by ${userAddress}`);
 
       // Validate access rule
       const validationResult = this.validateAccessRule(request.accessRule);
@@ -153,7 +157,7 @@ export class AccessControlService {
 
       // Update access control on smart contract
       const transactionDigest = await this.suiService.updateFileAccessControl(
-        user.zkLoginAddress,
+        userAddress,
         request.fileCid,
         request.accessRule
       );
@@ -192,13 +196,17 @@ export class AccessControlService {
         };
       }
 
-      this.logger.log(`Validating access for file ${request.fileCid} by ${user.zkLoginAddress}`);
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      const userEmail = 'zkLoginAddress' in user ? (user.email || '') : '';
+      
+      this.logger.log(`Validating access for file ${request.fileCid} by ${userAddress}`);
 
       // Check access through smart contract
       const accessGranted = await this.suiService.validateFileAccess(
         request.fileCid,
-        request.userAddress || user.zkLoginAddress,
-        request.userEmail || user.email
+        request.userAddress || userAddress,
+        request.userEmail || userEmail
       );
 
       this.logger.log(`Access validation result for file ${request.fileCid}: ${accessGranted}`);
@@ -374,7 +382,9 @@ export class AccessControlService {
 
       // Check if user owns the file or has permission to create share links
       // This would typically check the smart contract for file ownership
-      this.logger.log(`Generating share link for file ${request.fileCid} by ${user.zkLoginAddress}`);
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      this.logger.log(`Generating share link for file ${request.fileCid} by ${userAddress}`);
 
       // Generate unique share ID that includes the file CID for recovery
       // Format: share_{timestamp}_{fileCid}_{random}
@@ -389,7 +399,7 @@ export class AccessControlService {
       const shareData = {
         shareId,
         fileCid: request.fileCid,
-        createdBy: user.zkLoginAddress,
+        createdBy: userAddress,
         createdAt: Date.now(),
         expirationTime: request.expirationTime,
         maxUses: request.maxUses,
@@ -612,7 +622,9 @@ export class AccessControlService {
         };
       }
 
-      this.logger.log(`Processing bulk upload for file ${fileCid} by ${user.zkLoginAddress}`);
+      // Get user address (either wallet or zkLogin)
+      const userAddress = 'walletAddress' in user ? user.walletAddress : user.zkLoginAddress;
+      this.logger.log(`Processing bulk upload for file ${fileCid} by ${userAddress}`);
 
       // Validate file type
       const allowedMimeTypes = [
