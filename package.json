@@ -22,7 +22,7 @@
   "dependencies": {
     "@mysten/enoki": "^0.11.3",
     "@mysten/seal": "^0.4.18",
-    "@mysten/sui": "^1.36.2",
+    "@mysten/sui": "^1.37.2",
     "@mysten/sui.js": "^0.54.1",
     "@mysten/walrus": "^0.4.0",
     "@mysten/zklogin": "^0.8.1",
@@ -35,7 +35,8 @@
     "jose": "^6.0.12",
     "jsonwebtoken": "^9.0.2",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "transactions": "link:@mysten/sui/transactions"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

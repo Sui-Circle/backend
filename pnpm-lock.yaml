@@ -15,7 +15,7 @@ importers:
         specifier: ^0.4.18
         version: 0.4.21(typescript@5.9.2)
       '@mysten/sui':
-        specifier: ^1.36.2
+        specifier: ^1.37.2
         version: 1.37.2(typescript@5.9.2)
       '@mysten/sui.js':
         specifier: ^0.54.1
@@ -56,6 +56,9 @@ importers:
       rxjs:
         specifier: ^7.8.1
         version: 7.8.2
+      transactions:
+        specifier: link:@mysten/sui/transactions
+        version: link:@mysten/sui/transactions
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.2.0

@@ -3,7 +3,7 @@ import { WalrusClient, WalrusFile } from '@mysten/walrus';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { getZkLoginSignature } from '@mysten/sui/zklogin';
-import { Transaction } from '@mysten/sui/transactions';
+// import { Transaction } from '@mysten/sui/transactions';
 
 export interface WalrusUploadResult {
   success: boolean;
