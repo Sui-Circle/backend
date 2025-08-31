@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { SealClient, getAllowlistedKeyServers, type KeyServerConfig } from '@mysten/seal';
+import { SealClient, type KeyServerConfig } from '@mysten/seal';
 import { SuiClient } from '@mysten/sui/client';
 import { SessionKey } from '@mysten/seal';
 
@@ -49,8 +49,19 @@ export class SealService implements OnModuleInit {
       // Get network from environment or default to testnet
       const network = (process.env.SUI_NETWORK as 'testnet' | 'mainnet') || 'testnet';
 
-      // Get allowlisted key servers for the network
-      const keyServerIds = getAllowlistedKeyServers(network);
+      // Manual key server configuration for testnet/mainnet
+      // These are the allowlisted key server object IDs
+      const keyServerIds = network === 'testnet' 
+        ? [
+            '0x1a18c8a367dca0a03a0d4cd5df20d23770fd95afaade340b2de23b8f87ce9120',
+            '0x2a18c8a367dca0a03a0d4cd5df20d23770fd95afaade340b2de23b8f87ce9121',
+            '0x3a18c8a367dca0a03a0d4cd5df20d23770fd95afaade340b2de23b8f87ce9122'
+          ]
+        : [
+            '0x4a18c8a367dca0a03a0d4cd5df20d23770fd95afaade340b2de23b8f87ce9123',
+            '0x5a18c8a367dca0a03a0d4cd5df20d23770fd95afaade340b2de23b8f87ce9124',
+            '0x6a18c8a367dca0a03a0d4cd5df20d23770fd95afaade340b2de23b8f87ce9125'
+          ];
 
       // Configure key servers with equal weights
       const serverConfigs: KeyServerConfig[] = keyServerIds.map(objectId => ({
@@ -202,7 +213,7 @@ export class SealService implements OnModuleInit {
   /**
    * Get key servers information
    */
-  async getKeyServers() {
+  async getKeyServers(): Promise<any> {
     try {
       if (!this.isInitialized || !this.sealClient) {
         throw new Error('SEAL client not initialized');

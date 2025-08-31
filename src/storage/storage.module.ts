@@ -4,6 +4,6 @@ import { WalrusService } from './walrus/walrus.service';
 
 @Module({
   providers: [SealService, WalrusService],
-  exports: [SealService, WalrusService]
+  exports: [SealService, WalrusService],
 })
 export class StorageModule {}
