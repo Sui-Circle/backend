@@ -100,6 +100,78 @@ export class AccessControlController {
   }
 
   /**
+   * Create access control rules for a file (Wallet-based auth)
+   * POST /access-control/wallet
+   */
+  @Post('wallet')
+  async createAccessControlWithWallet(
+    @Headers('x-wallet-address') walletAddress: string,
+    @Body() request: CreateAccessControlRequest,
+  ) {
+    try {
+      if (!walletAddress) {
+        throw new HttpException('Wallet address required', HttpStatus.BAD_REQUEST);
+      }
+
+      const result = await this.accessControlService.createAccessControlWithWallet(walletAddress, request);
+
+      if (!result.success) {
+        throw new HttpException(result.message, HttpStatus.BAD_REQUEST);
+      }
+
+      return {
+        success: true,
+        data: {
+          transactionDigest: result.transactionDigest,
+        },
+        message: result.message,
+      };
+    } catch (error) {
+      this.logger.error('Failed to create access control with wallet', error);
+      throw new HttpException(
+        error.message || 'Failed to create access control',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Update access control rules for a file (Wallet-based auth)
+   * PUT /access-control/wallet
+   */
+  @Put('wallet')
+  async updateAccessControlWithWallet(
+    @Headers('x-wallet-address') walletAddress: string,
+    @Body() request: UpdateAccessControlRequest,
+  ) {
+    try {
+      if (!walletAddress) {
+        throw new HttpException('Wallet address required', HttpStatus.BAD_REQUEST);
+      }
+
+      const result = await this.accessControlService.updateAccessControlWithWallet(walletAddress, request);
+
+      if (!result.success) {
+        throw new HttpException(result.message, HttpStatus.BAD_REQUEST);
+      }
+
+      return {
+        success: true,
+        data: {
+          transactionDigest: result.transactionDigest,
+        },
+        message: result.message,
+      };
+    } catch (error) {
+      this.logger.error('Failed to update access control with wallet', error);
+      throw new HttpException(
+        error.message || 'Failed to update access control',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
    * Validate access to a file
    * POST /access-control/validate
    */
@@ -160,6 +232,44 @@ export class AccessControlController {
       }
 
       this.logger.error('Failed to get access control info', error);
+      throw new HttpException(
+        'Failed to get access control info',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Get access control information for a file (Wallet-based auth)
+   * GET /access-control/:fileCid-wallet
+   */
+  @Get(':fileCid-wallet')
+  async getAccessControlInfoWithWallet(
+    @Param('fileCid') fileCid: string,
+    @Headers('x-wallet-address') walletAddress: string,
+  ) {
+    try {
+      if (!walletAddress) {
+        throw new HttpException('Wallet address required', HttpStatus.BAD_REQUEST);
+      }
+
+      const result = await this.accessControlService.getAccessControlInfoWithWallet(walletAddress, fileCid);
+
+      if (!result.success) {
+        throw new HttpException(result.message, HttpStatus.NOT_FOUND);
+      }
+
+      return {
+        success: true,
+        data: result.data,
+        message: result.message,
+      };
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      this.logger.error('Failed to get access control info with wallet', error);
       throw new HttpException(
         'Failed to get access control info',
         HttpStatus.INTERNAL_SERVER_ERROR
@@ -363,6 +473,40 @@ export class AccessControlController {
       };
     } catch (error) {
       this.logger.error('Failed to generate share link (test)', error);
+      throw new HttpException(
+        error.message || 'Failed to generate share link',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Generate a shareable link for a file (Wallet-based auth)
+   * POST /access-control/share-link-wallet
+   */
+  @Post('share-link-wallet')
+  async generateShareLinkWithWallet(
+    @Headers('x-wallet-address') walletAddress: string,
+    @Body() request: { fileCid: string; expirationTime?: number; maxUses?: number },
+  ) {
+    try {
+      if (!walletAddress) {
+        throw new HttpException('Wallet address required', HttpStatus.BAD_REQUEST);
+      }
+
+      const result = await this.accessControlService.generateShareLinkWithWallet(walletAddress, request);
+
+      if (!result.success) {
+        throw new HttpException(result.message, HttpStatus.BAD_REQUEST);
+      }
+
+      return {
+        success: true,
+        data: result.data,
+        message: result.message,
+      };
+    } catch (error) {
+      this.logger.error('Failed to generate share link with wallet', error);
       throw new HttpException(
         error.message || 'Failed to generate share link',
         HttpStatus.INTERNAL_SERVER_ERROR

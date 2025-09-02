@@ -179,6 +179,104 @@ export class AccessControlService {
   }
 
   /**
+   * Create access control rules for a file (Wallet-based auth)
+   */
+  async createAccessControlWithWallet(
+    walletAddress: string,
+    request: CreateAccessControlRequest
+  ): Promise<AccessControlResponse> {
+    try {
+      if (!walletAddress) {
+        return {
+          success: false,
+          message: 'Wallet address required',
+        };
+      }
+
+      this.logger.log(`Creating access control for file ${request.fileCid} by wallet ${walletAddress}`);
+
+      // Validate access rule
+      const validationResult = this.validateAccessRule(request.accessRule);
+      if (!validationResult.valid) {
+        return {
+          success: false,
+          message: `Invalid access rule: ${validationResult.error}`,
+        };
+      }
+
+      // Create access control on smart contract
+      const transactionDigest = await this.suiService.createFileAccessControl(
+        walletAddress,
+        request.fileCid,
+        request.accessRule
+      );
+
+      this.logger.log(`Access control created for file ${request.fileCid}: ${transactionDigest}`);
+
+      return {
+        success: true,
+        message: 'Access control created successfully',
+        transactionDigest,
+      };
+    } catch (error) {
+      this.logger.error('Failed to create access control with wallet', error);
+      return {
+        success: false,
+        message: `Failed to create access control: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Update access control rules for a file (Wallet-based auth)
+   */
+  async updateAccessControlWithWallet(
+    walletAddress: string,
+    request: UpdateAccessControlRequest
+  ): Promise<AccessControlResponse> {
+    try {
+      if (!walletAddress) {
+        return {
+          success: false,
+          message: 'Wallet address required',
+        };
+      }
+
+      this.logger.log(`Updating access control for file ${request.fileCid} by wallet ${walletAddress}`);
+
+      // Validate access rule
+      const validationResult = this.validateAccessRule(request.accessRule);
+      if (!validationResult.valid) {
+        return {
+          success: false,
+          message: `Invalid access rule: ${validationResult.error}`,
+        };
+      }
+
+      // Update access control on smart contract
+      const transactionDigest = await this.suiService.updateFileAccessControl(
+        walletAddress,
+        request.fileCid,
+        request.accessRule
+      );
+
+      this.logger.log(`Access control updated for file ${request.fileCid}: ${transactionDigest}`);
+
+      return {
+        success: true,
+        message: 'Access control updated successfully',
+        transactionDigest,
+      };
+    } catch (error) {
+      this.logger.error('Failed to update access control with wallet', error);
+      return {
+        success: false,
+        message: `Failed to update access control: ${error.message}`,
+      };
+    }
+  }
+
+  /**
    * Validate if a user has access to a file
    */
   async validateAccess(
@@ -262,6 +360,47 @@ export class AccessControlService {
       };
     } catch (error) {
       this.logger.error('Failed to get access control info', error);
+      return {
+        success: false,
+        message: `Failed to get access control info: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Get access control information for a file (Wallet-based auth)
+   */
+  async getAccessControlInfoWithWallet(
+    walletAddress: string,
+    fileCid: string
+  ): Promise<{ success: boolean; data?: AccessControlInfo; message: string }> {
+    try {
+      if (!walletAddress) {
+        return {
+          success: false,
+          message: 'Wallet address required',
+        };
+      }
+
+      this.logger.log(`Getting access control info for file ${fileCid} by wallet ${walletAddress}`);
+
+      // Get access control info from smart contract
+      const accessControlInfo = await this.suiService.getFileAccessControlInfo(fileCid);
+
+      if (!accessControlInfo) {
+        return {
+          success: false,
+          message: 'Access control not found for this file',
+        };
+      }
+
+      return {
+        success: true,
+        data: accessControlInfo,
+        message: 'Access control information retrieved successfully',
+      };
+    } catch (error) {
+      this.logger.error('Failed to get access control info with wallet', error);
       return {
         success: false,
         message: `Failed to get access control info: ${error.message}`,
@@ -423,6 +562,67 @@ export class AccessControlService {
       };
     } catch (error) {
       this.logger.error('Failed to generate share link', error);
+      return {
+        success: false,
+        message: `Failed to generate share link: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Generate a shareable link for a file (Wallet-based auth)
+   */
+  async generateShareLinkWithWallet(
+    walletAddress: string,
+    request: { fileCid: string; expirationTime?: number; maxUses?: number }
+  ): Promise<{ success: boolean; data?: any; message: string }> {
+    try {
+      if (!walletAddress) {
+        return {
+          success: false,
+          message: 'Wallet address required',
+        };
+      }
+
+      this.logger.log(`Generating share link for file ${request.fileCid} by wallet ${walletAddress}`);
+
+      // Generate unique share ID that includes the file CID for recovery
+      // Format: share_{timestamp}_{fileCid}_{random}
+      const timestamp = Date.now();
+      const randomSuffix = Math.random().toString(36).substring(2, 8);
+      const shareId = `share_${timestamp}_${request.fileCid}_${randomSuffix}`;
+
+      // Create share link URL
+      const shareLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/share/${shareId}`;
+
+      // Store share link data (in a real implementation, this would be stored in a database)
+      const shareData = {
+        shareId,
+        fileCid: request.fileCid,
+        createdBy: walletAddress,
+        createdAt: Date.now(),
+        expirationTime: request.expirationTime,
+        maxUses: request.maxUses,
+        currentUses: 0,
+      };
+
+      // Store the share link data in memory
+      this.shareLinks.set(shareId, shareData);
+
+      this.logger.log(`Share link created: ${shareId} for file ${request.fileCid}`);
+
+      return {
+        success: true,
+        data: {
+          shareLink,
+          shareId,
+          expirationTime: request.expirationTime,
+          maxUses: request.maxUses,
+        },
+        message: 'Share link generated successfully',
+      };
+    } catch (error) {
+      this.logger.error('Failed to generate share link with wallet', error);
       return {
         success: false,
         message: `Failed to generate share link: ${error.message}`,
