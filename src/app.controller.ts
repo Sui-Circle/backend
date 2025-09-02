@@ -18,7 +18,7 @@ export class AppController {
   }
 
   /**
-   * List user's files - authenticated endpoint
+   * List user's files - authenticated endpoint (Token-based auth)
    * GET /files
    */
   @Get('files')
@@ -41,6 +41,38 @@ export class AppController {
       };
     } catch (error) {
       this.logger.error('Failed to list user files', error);
+      throw new HttpException(
+        'Failed to list user files',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * List user's files - authenticated endpoint (Wallet-based auth)
+   * GET /files-wallet
+   */
+  @Get('files-wallet')
+  async listUserFilesWithWallet(
+    @Headers('x-wallet-address') walletAddress: string,
+  ) {
+    try {
+      if (!walletAddress) {
+        throw new HttpException('Wallet address required', HttpStatus.BAD_REQUEST);
+      }
+
+      const result = await this.fileService.listUserFilesWithWallet(walletAddress);
+
+      return {
+        success: result.success,
+        files: result.files, // Direct files array for compatibility
+        data: {
+          files: result.files,
+        },
+        message: result.message,
+      };
+    } catch (error) {
+      this.logger.error('Failed to list user files with wallet', error);
       throw new HttpException(
         'Failed to list user files',
         HttpStatus.INTERNAL_SERVER_ERROR
@@ -75,7 +107,7 @@ export class AppController {
   }
 
   /**
-   * Delete all user files - authenticated endpoint
+   * Delete all user files - authenticated endpoint (Token-based auth)
    * DELETE /files
    */
   @Delete('files')
@@ -94,6 +126,34 @@ export class AppController {
       };
     } catch (error) {
       this.logger.error('Failed to clear user files', error);
+      throw new HttpException(
+        'Failed to clear user files',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Delete all user files - authenticated endpoint (Wallet-based auth)
+   * DELETE /files-wallet
+   */
+  @Delete('files-wallet')
+  async clearUserFilesWithWallet(
+    @Headers('x-wallet-address') walletAddress: string,
+  ) {
+    try {
+      if (!walletAddress) {
+        throw new HttpException('Wallet address required', HttpStatus.BAD_REQUEST);
+      }
+
+      const result = await this.fileService.clearUserFilesWithWallet(walletAddress);
+
+      return {
+        success: result.success,
+        message: result.message,
+      };
+    } catch (error) {
+      this.logger.error('Failed to clear user files with wallet', error);
       throw new HttpException(
         'Failed to clear user files',
         HttpStatus.INTERNAL_SERVER_ERROR

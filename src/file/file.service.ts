@@ -1343,9 +1343,9 @@ export class FileService {
   }
 
   /**
-   * List files without authentication (for testing)
+   * List files accessible by wallet address
    */
-  async listUserFilesNoAuth(): Promise<{
+  async listUserFilesWithWallet(walletAddress: string): Promise<{
     success: boolean;
     files: Array<{
       cid: string;
@@ -1355,6 +1355,53 @@ export class FileService {
       uploader: string;
       isOwner: boolean;
     }>;
+    message: string;
+  }> {
+    try {
+      if (!walletAddress) {
+        return {
+          success: false,
+          files: [],
+          message: 'Wallet address required',
+        };
+      }
+
+      this.logger.log(`Listing files for wallet address ${walletAddress}`);
+
+      // Ensure inmemory cache loaded from disk
+      this.ensureLoadedFromDisk();
+
+      // Get user files from memory/disk cache
+      const userFiles = this.uploadedFiles.get(walletAddress) || [];
+
+      return {
+        success: true,
+        files: userFiles,
+        message: userFiles.length > 0 ? `Found ${userFiles.length} files` : 'No files uploaded yet',
+      };
+    } catch (error) {
+      this.logger.error('Failed to list user files with wallet', error);
+      return {
+        success: false,
+        files: [],
+        message: `Failed to list files: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * List files without authentication (for testing)
+   */
+  async listUserFilesNoAuth(): Promise<{
+    success: boolean;
+          files: Array<{
+        cid: string;
+        filename: string;
+        fileSize: number;
+        uploadTimestamp: number;
+        uploader: string;
+        isOwner: boolean;
+      }>;
     message: string;
   }> {
     try {
@@ -1415,12 +1462,47 @@ export class FileService {
   }
 
   /**
+   * Clear all user files with wallet address
+   */
+  async clearUserFilesWithWallet(walletAddress: string): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    try {
+      if (!walletAddress) {
+        return {
+          success: false,
+          message: 'Wallet address required',
+        };
+      }
+
+      this.logger.log(`Clearing files for wallet address ${walletAddress}`);
+
+      // Clear user files from memory
+      const userFiles = this.uploadedFiles.get(walletAddress) || [];
+      const fileCount = userFiles.length;
+      this.uploadedFiles.delete(walletAddress);
+
+      return {
+        success: true,
+        message: `Cleared ${fileCount} files for wallet address`,
+      };
+    } catch (error) {
+      this.logger.error('Failed to clear user files with wallet', error);
+      return {
+        success: false,
+        message: `Failed to clear files: ${error.message}`,
+      };
+    }
+  }
+
+  /**
    * Clear all user files without authentication (for testing)
    */
   async clearUserFilesNoAuth(): Promise<{
     success: boolean;
     message: string;
-  }> {
+    }> {
     try {
       this.logger.log('Clearing files (no auth  test mode)');
 
