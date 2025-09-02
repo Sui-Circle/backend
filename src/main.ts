@@ -51,7 +51,7 @@ async function bootstrap() {
     'https://frontend-delta-umber-24.vercel.app', // ✅ Add your Vercel frontend here
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-wallet-address', 'x-walrus-epochs', 'x-walrus-deletable'],
   credentials: true,
   // Expose headers so the frontend can read them (needed for filename and encryption status)
   exposedHeaders: ['Content-Disposition', 'X-File-Encrypted', 'X-Seal-Encryption-Id', 'Content-Length', 'Content-Type'],

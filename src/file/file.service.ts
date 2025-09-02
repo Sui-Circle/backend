@@ -272,7 +272,8 @@ export class FileService {
             {
               epochs: uploadRequest.walrusOptions?.epochs,
               deletable: uploadRequest.walrusOptions?.deletable ?? false,
-            }
+            },
+            process.env.NODE_ENV === 'development' // Force mock mode in development
           );
         }
 
@@ -429,6 +430,171 @@ export class FileService {
       };
     } catch (error) {
       this.logger.error('Failed to upload file', error);
+      return {
+        success: false,
+        fileCid: '',
+        transactionDigest: '',
+        walrusCid: uploadRequest.walrusCid || '',
+        message: `Failed to upload file: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Upload a file with wallet authentication (no token required)
+   */
+  async uploadFileWithWallet(
+    walletAddress: string,
+    uploadRequest: FileUploadRequest
+  ): Promise<FileUploadResponse> {
+    try {
+      this.logger.log(`Uploading file with wallet auth: ${uploadRequest.filename} by ${walletAddress}`);
+
+      // Validate wallet address
+      if (!walletAddress || walletAddress.length < 10) {
+        return {
+          success: false,
+          fileCid: '',
+          transactionDigest: '',
+          walrusCid: uploadRequest.walrusCid || '',
+          message: 'Invalid wallet address',
+        };
+      }
+
+      // Check for admin address usage
+      const adminValidation = this.walletValidationService.validateNoAdminAddressUsage(
+        walletAddress,
+        'file_upload'
+      );
+      if (!adminValidation.isValid) {
+        this.logger.error('Admin address usage detected:', adminValidation.errors);
+        return {
+          success: false,
+          fileCid: '',
+          transactionDigest: '',
+          walrusCid: uploadRequest.walrusCid || '',
+          message: `Invalid wallet usage: ${adminValidation.errors.join(', ')}`,
+        };
+      }
+
+      let walrusCid = uploadRequest.walrusCid;
+      let encryptionKeys: { encryptionId: string; symmetricKey: string } | undefined;
+      let dataToUpload = uploadRequest.fileData;
+
+      // Handle encryption if requested
+      if (uploadRequest.enableEncryption) {
+        this.logger.log(`Encrypting file with SEAL: ${uploadRequest.filename}`);
+
+        // Get package ID from environment or use default
+        const packageId = process.env.SUI_PACKAGE_ID || '0x1';
+
+        const encryptionResult = await this.sealService.encryptFile(
+          uploadRequest.fileData,
+          {
+            packageId,
+            identity: uploadRequest.filename,
+            threshold: 3,
+          }
+        );
+
+        if (!encryptionResult.success) {
+          return {
+            success: false,
+            fileCid: '',
+            transactionDigest: '',
+            walrusCid: '',
+            message: `Failed to encrypt file: ${encryptionResult.error}`,
+          };
+        }
+
+        dataToUpload = Buffer.from(encryptionResult.encryptedData!);
+        encryptionKeys = {
+          encryptionId: encryptionResult.encryptionId!,
+          symmetricKey: Buffer.from(encryptionResult.symmetricKey!).toString('base64'),
+        };
+        this.logger.log(`File encrypted successfully: ${uploadRequest.filename}`);
+      }
+
+      // If no Walrus CID provided, upload to Walrus first
+      if (!walrusCid) {
+        this.logger.log(`Uploading file to Walrus: ${uploadRequest.filename}${uploadRequest.enableEncryption ? ' (encrypted)' : ''}`);
+
+        // For wallet auth, use regular upload with mock mode (no zkLogin)
+        const walrusResult = await this.walrusService.uploadFile(
+          dataToUpload,
+          uploadRequest.filename,
+          uploadRequest.contentType,
+          {
+            epochs: uploadRequest.walrusOptions?.epochs,
+            deletable: uploadRequest.walrusOptions?.deletable ?? false,
+          },
+          true // Force mock mode for wallet-based uploads
+        );
+
+        if (!walrusResult.success) {
+          return {
+            success: false,
+            fileCid: '',
+            transactionDigest: '',
+            walrusCid: '',
+            message: `Failed to upload to Walrus: ${walrusResult.error}`,
+          };
+        }
+
+        walrusCid = walrusResult.blobId!;
+        this.logger.log(`File uploaded to Walrus with CID: ${walrusCid}`);
+      }
+
+      // Ensure walrusCid is defined
+      if (!walrusCid) {
+        return {
+          success: false,
+          fileCid: '',
+          transactionDigest: '',
+          walrusCid: '',
+          message: 'Failed to get Walrus CID',
+        };
+      }
+
+      // Upload file metadata to smart contract
+      const transactionDigest = await this.suiService.uploadFileWithWallet(
+        walletAddress,
+        walrusCid,
+        uploadRequest.filename,
+        uploadRequest.fileSize
+      );
+
+      this.logger.log(
+        `File metadata uploaded to smart contract: ${uploadRequest.filename} by ${walletAddress}`
+      );
+
+      // Store file metadata in memory for listing
+      const userFiles = this.uploadedFiles.get(walletAddress) || [];
+      userFiles.push({
+        cid: walrusCid,
+        filename: uploadRequest.filename,
+        fileSize: uploadRequest.fileSize,
+        uploadTimestamp: Date.now(),
+        uploader: walletAddress,
+        isOwner: true,
+        isEncrypted: uploadRequest.enableEncryption,
+        encryptionKeys: encryptionKeys ? {
+          publicKey: encryptionKeys.encryptionId,
+          secretKey: encryptionKeys.symmetricKey,
+        } : undefined,
+      });
+      this.uploadedFiles.set(walletAddress, userFiles);
+      this.persistToDisk();
+
+      return {
+        success: true,
+        fileCid: walrusCid,
+        transactionDigest,
+        walrusCid,
+        message: 'File uploaded successfully',
+      };
+    } catch (error) {
+      this.logger.error('Failed to upload file with wallet', error);
       return {
         success: false,
         fileCid: '',
@@ -990,7 +1156,9 @@ export class FileService {
         const walrusResult = await this.walrusService.uploadFile(
           dataToUpload,
           uploadRequest.filename,
-          uploadRequest.contentType
+          uploadRequest.contentType,
+          undefined, // No options
+          true // Force mock mode for noauth uploads
         );
 
         if (!walrusResult.success) {

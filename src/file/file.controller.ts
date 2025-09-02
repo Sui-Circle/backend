@@ -26,7 +26,7 @@ export class FileController {
   constructor(private readonly fileService: FileService) {}
 
   /**
-   * Upload a file with multipart form data
+   * Upload a file with multipart form data (Token-based auth)
    * POST /file/upload
    */
   @Post('upload')
@@ -73,6 +73,63 @@ export class FileController {
       };
     } catch (error) {
       this.logger.error('Failed to upload file', error);
+      throw new HttpException(
+        error.message || 'Failed to upload file',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Upload a file with multipart form data (Wallet-based auth)
+   * POST /file/upload-wallet
+   */
+  @Post('upload-wallet')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadFileWithWallet(
+    @Headers('x-wallet-address') walletAddress: string,
+    @Headers('x-walrus-epochs') epochsHeader: string,
+    @Headers('x-walrus-deletable') deletableHeader: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    try {
+      if (!file) {
+        throw new HttpException('No file provided', HttpStatus.BAD_REQUEST);
+      }
+
+      if (!walletAddress) {
+        throw new HttpException('Wallet address is required', HttpStatus.BAD_REQUEST);
+      }
+
+      const uploadRequest: FileUploadRequest = {
+        filename: file.originalname,
+        fileSize: file.size,
+        contentType: file.mimetype,
+        fileData: file.buffer,
+        walrusOptions: {
+          epochs: epochsHeader ? parseInt(epochsHeader) : undefined,
+          deletable: typeof deletableHeader === 'string' ? deletableHeader.toLowerCase() === 'true' : undefined,
+        },
+      };
+
+      // For wallet-based auth, we'll use the wallet address as the identifier
+      const result = await this.fileService.uploadFileWithWallet(walletAddress, uploadRequest);
+
+      if (!result.success) {
+        throw new HttpException(result.message, HttpStatus.BAD_REQUEST);
+      }
+
+      return {
+        success: true,
+        data: {
+          fileCid: result.fileCid,
+          transactionDigest: result.transactionDigest,
+          walrusCid: result.walrusCid,
+        },
+        message: result.message,
+      };
+    } catch (error) {
+      this.logger.error('Failed to upload file with wallet', error);
       throw new HttpException(
         error.message || 'Failed to upload file',
         HttpStatus.INTERNAL_SERVER_ERROR

@@ -149,6 +149,8 @@ export class WalrusService {
    * @param fileData - The file data as Buffer or Uint8Array
    * @param filename - Original filename for metadata
    * @param contentType - MIME type of the file
+   * @param options - Upload options
+   * @param forceMock - Force mock mode (useful for wallet-based uploads)
    * @returns Promise with upload result containing blobId
    */
   async uploadFile(
@@ -156,6 +158,7 @@ export class WalrusService {
     filename: string,
     contentType?: string,
     options?: WalrusUploadOptions,
+    forceMock: boolean = false,
   ): Promise<WalrusUploadResult> {
     try {
       this.logger.log(
@@ -167,11 +170,13 @@ export class WalrusService {
         fileData instanceof Buffer ? new Uint8Array(fileData) : fileData;
 
       // Check if we're in development mode or if Walrus client failed to initialize (fallback to mock)
+      // For development mode, when no proper signer is available, or when forced, use mock mode
       if (
+        forceMock ||
         !this.walrusClient ||
-        (process.env.NODE_ENV === 'development' &&
-          !process.env.WALRUS_PRIVATE_KEY &&
-          !this.useUploadRelay)
+        process.env.NODE_ENV === 'development' ||
+        !process.env.WALRUS_PRIVATE_KEY ||
+        (this.useUploadRelay && !this.signer)
       ) {
         this.logger.warn(
           'Using mock upload mode due to missing configuration or initialization failure',
@@ -230,7 +235,11 @@ export class WalrusService {
       // Check if we should use upload relay or direct upload
       let result: WalrusUploadResult;
 
-      if (this.useUploadRelay) {
+      // For development mode or when no proper signer is available, use mock mode
+      if (process.env.NODE_ENV === 'development' || !this.walrusClient || !this.signer) {
+        this.logger.log(`Using mock upload mode for zkLogin upload (user: ${userAddress})`);
+        result = await this.uploadFileMock(data, filename);
+      } else if (this.useUploadRelay) {
         this.logger.log(`Using upload relay for zkLogin upload (user: ${userAddress})`);
         // Use upload relay which doesn't require complex signer setup
         result = await this.uploadViaRelay(data, filename, contentType, options);
